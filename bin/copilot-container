@@ -1,0 +1,295 @@
+#!/usr/bin/env bash
+#
+# copilot-container - launch GitHub Copilot CLI in a container with sensible
+# defaults: host-identical bind mounts, a per-project persistent state
+# volume, GH token passthrough, and host-loopback reachability for Hunk.
+#
+# Usage:
+#   copilot-container -m <path> [-m <path> ...] [options] [-- <copilot CLI args...>]
+#
+# Options:
+#   -m, --mount <host_path>[:<container_path>]
+#                            Bind-mount a host directory (repeatable). If no
+#                            container path is given, it is mounted at the
+#                            same absolute path inside the container as on
+#                            the host, so paths stay recognizable. The
+#                            *first* --mount given is treated as the primary
+#                            project: its directory is the container's
+#                            working directory, and its path is used to
+#                            derive the per-project state volume name.
+#   -i, --image <name>       Container image to run (default: copilot-container)
+#   -e, --engine <podman|docker>
+#                            Force a specific container engine
+#   -g, --gitconfig <path>   Host file to bind-mount read-only as the
+#                            container's ~/.gitconfig (default: ~/.gitconfig).
+#                            Useful for switching between multiple gitconfig
+#                            profiles (e.g. ~/.gitconfig-work) per project.
+#   -h, --help               Show this help and exit
+#
+# At least one --mount is required.
+#
+# Any arguments after `--` are forwarded verbatim to the `copilot` CLI
+# inside the container (e.g. --model, permission flags, etc.).
+#
+# Environment:
+#   GH_TOKEN / GITHUB_TOKEN   Passed into the container if set on the host.
+#   COPILOT_CONTAINER_ENGINE  Force engine selection (podman|docker).
+#   COPILOT_CONTAINER_IMAGE   Default image name/tag to run.
+
+set -euo pipefail
+
+# --- Container engine detection & host-loopback helpers -------------------
+# Podman is preferred over Docker; override with COPILOT_CONTAINER_ENGINE.
+# Kept inline (rather than sourced from a separate file) so this script has
+# no path dependency on the rest of the repo and stays correct even when
+# installed/symlinked elsewhere on PATH.
+
+detect_engine() {
+    if [ -n "${COPILOT_CONTAINER_ENGINE:-}" ]; then
+        if command -v "${COPILOT_CONTAINER_ENGINE}" >/dev/null 2>&1; then
+            echo "${COPILOT_CONTAINER_ENGINE}"
+            return 0
+        fi
+        echo "error: COPILOT_CONTAINER_ENGINE=${COPILOT_CONTAINER_ENGINE} is set but not found on PATH" >&2
+        return 1
+    fi
+
+    if command -v podman >/dev/null 2>&1; then
+        echo "podman"
+        return 0
+    fi
+
+    if command -v docker >/dev/null 2>&1; then
+        echo "docker"
+        return 0
+    fi
+
+    echo "error: neither podman nor docker was found on PATH" >&2
+    return 1
+}
+
+# host_gateway_flags <engine>: prints extra `run` flags (word-split by the
+# caller) needed so the container can reach services bound to the host's
+# loopback interface (e.g. Hunk's daemon).
+host_gateway_flags() {
+    engine="$1"
+    os="$(uname -s)"
+
+    case "${engine}" in
+        docker)
+            # Docker Desktop (mac) resolves host.docker.internal natively.
+            # Linux Docker needs the explicit host-gateway mapping.
+            if [ "${os}" = "Linux" ]; then
+                echo "--add-host=host.docker.internal:host-gateway"
+            else
+                echo ""
+            fi
+            ;;
+        podman)
+            # Podman >= 4 provides host.containers.internal automatically;
+            # add the host-gateway mapping too as a fallback for older
+            # versions / rootless network setups.
+            echo "--add-host=host.containers.internal:host-gateway"
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
+}
+
+# host_loopback_hostname <engine>: prints the hostname the container should
+# use to reach the host's loopback-bound services (e.g. Hunk's daemon).
+host_loopback_hostname() {
+    engine="$1"
+    case "${engine}" in
+        docker) echo "host.docker.internal" ;;
+        podman) echo "host.containers.internal" ;;
+        *) echo "host.docker.internal" ;;
+    esac
+}
+
+IMAGE="${COPILOT_CONTAINER_IMAGE:-copilot-container}"
+GITCONFIG_PATH="${HOME}/.gitconfig"
+MOUNT_ARGS=()
+FORWARD_ARGS=()
+
+usage() {
+    sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+require_option_value() {
+    option="$1"
+    value="${2:-}"
+    if [ -z "${value}" ]; then
+        echo "error: ${option} requires a value" >&2
+        usage >&2
+        exit 2
+    fi
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -m|--mount)
+            require_option_value "$1" "${2:-}"
+            MOUNT_ARGS+=("$2")
+            shift 2
+            ;;
+        -i|--image)
+            require_option_value "$1" "${2:-}"
+            IMAGE="$2"
+            shift 2
+            ;;
+        -e|--engine)
+            require_option_value "$1" "${2:-}"
+            case "$2" in
+                podman|docker) ;;
+                *)
+                    echo "error: --engine must be podman or docker: $2" >&2
+                    exit 2
+                    ;;
+            esac
+            COPILOT_CONTAINER_ENGINE="$2"
+            export COPILOT_CONTAINER_ENGINE
+            shift 2
+            ;;
+        -g|--gitconfig)
+            require_option_value "$1" "${2:-}"
+            GITCONFIG_PATH="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --)
+            shift
+            FORWARD_ARGS+=("$@")
+            break
+            ;;
+        *)
+            FORWARD_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+if [ "${#MOUNT_ARGS[@]}" -eq 0 ]; then
+    echo "error: at least one --mount <path> is required" >&2
+    usage >&2
+    exit 1
+fi
+
+if [ "${GITCONFIG_PATH}" != "${HOME}/.gitconfig" ] && [ ! -f "${GITCONFIG_PATH}" ]; then
+    echo "error: --gitconfig file not found: ${GITCONFIG_PATH}" >&2
+    exit 1
+fi
+
+ENGINE="$(detect_engine)"
+
+# --- Resolve mounts, preserving host paths inside the container ----------
+BIND_FLAGS=()
+HOST_PATHS=()
+CONTAINER_PATHS=()
+for m in "${MOUNT_ARGS[@]}"; do
+    if [ -z "${m}" ]; then
+        echo "error: mount path must not be empty" >&2
+        exit 2
+    fi
+    if [[ "${m}" == *:* ]]; then
+        host_path="${m%:*}"
+        container_path="${m##*:}"
+    else
+        host_path="${m}"
+        container_path="${host_path}"
+    fi
+    if [ -z "${host_path}" ]; then
+        echo "error: mount source must not be empty: ${m}" >&2
+        exit 2
+    fi
+    if [[ "${container_path}" != /* ]]; then
+        echo "error: mount destination must be an absolute path: ${container_path}" >&2
+        exit 2
+    fi
+    if [ ! -d "${host_path}" ]; then
+        echo "error: mount source directory not found: ${host_path}" >&2
+        exit 2
+    fi
+    host_path="$(cd -- "${host_path}" && pwd -P)"
+    BIND_FLAGS+=(-v "${host_path}:${container_path}")
+    HOST_PATHS+=("${host_path}")
+    CONTAINER_PATHS+=("${container_path}")
+done
+
+PRIMARY_HOST_PATH="${HOST_PATHS[0]}"
+PRIMARY_CONTAINER_PATH="${CONTAINER_PATHS[0]}"
+
+# --- Per-project state volume ------------------------------------------
+# Derive a stable, human-legible volume name from the primary project's
+# path: its basename plus a short hash of the full path (to disambiguate
+# same-named projects in different locations).
+project_slug="$(basename "${PRIMARY_HOST_PATH}" | tr -c 'a-zA-Z0-9_.-' '_')"
+path_hash="$(printf '%s' "${PRIMARY_HOST_PATH}" | shasum -a 256 2>/dev/null | cut -c1-10 || \
+             printf '%s' "${PRIMARY_HOST_PATH}" | sha256sum | cut -c1-10)"
+VOLUME_NAME="copilot-container_${project_slug}_${path_hash}"
+
+"${ENGINE}" volume inspect "${VOLUME_NAME}" >/dev/null 2>&1 || \
+    "${ENGINE}" volume create "${VOLUME_NAME}" >/dev/null
+
+# --- Host UID/GID for the entrypoint's privilege drop ----------------------
+HOST_UID="$(id -u)"
+HOST_GID="$(id -g)"
+
+# --- Host git configuration --------------------------------------------
+# Mounted read-only: the container can read your identity/aliases, but
+# changes made inside the container (e.g. `git config --global ...`) do
+# not write back to the host file. Which host file to use is configurable
+# via -g/--gitconfig, e.g. to switch between multiple gitconfig profiles.
+GIT_FLAGS=()
+if [ -f "${GITCONFIG_PATH}" ]; then
+    GIT_FLAGS+=(-v "${GITCONFIG_PATH}:/home/copilot/.gitconfig:ro")
+fi
+
+# --- Host Copilot CLI config/instructions --------------------------------
+# Mounted read-only from your real ~/.copilot, same as .gitconfig: no
+# defaults are baked into the image, so these reflect whatever you already
+# have configured on the host. Everything else under ~/.copilot (session
+# state, permissions-config.json, etc.) stays in the per-project named
+# volume, unaffected by these two file mounts.
+COPILOT_FLAGS=()
+if [ -f "${HOME}/.copilot/config.json" ]; then
+    COPILOT_FLAGS+=(-v "${HOME}/.copilot/config.json:/home/copilot/.copilot/config.json:ro")
+fi
+if [ -f "${HOME}/.copilot/copilot-instructions.md" ]; then
+    COPILOT_FLAGS+=(-v "${HOME}/.copilot/copilot-instructions.md:/home/copilot/.copilot/copilot-instructions.md:ro")
+fi
+
+# --- Assemble run flags ------------------------------------------------
+RUN_FLAGS=(
+    --rm -it
+    "${BIND_FLAGS[@]}"
+    -v "${VOLUME_NAME}:/home/copilot"
+    "${GIT_FLAGS[@]}"
+    "${COPILOT_FLAGS[@]}"
+    -e "HOST_UID=${HOST_UID}"
+    -e "HOST_GID=${HOST_GID}"
+    -e "PRIMARY_WORKSPACE=${PRIMARY_CONTAINER_PATH}"
+)
+
+# GH token passthrough (never persisted, only forwarded if present on host).
+if [ -n "${GH_TOKEN:-}" ]; then
+    RUN_FLAGS+=(-e "GH_TOKEN=${GH_TOKEN}")
+fi
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+    RUN_FLAGS+=(-e "GITHUB_TOKEN=${GITHUB_TOKEN}")
+fi
+
+# Host-loopback reachability (for Hunk's daemon on the host).
+# shellcheck disable=SC2207
+gateway_flags=($(host_gateway_flags "${ENGINE}"))
+if [ "${#gateway_flags[@]}" -gt 0 ]; then
+    RUN_FLAGS+=("${gateway_flags[@]}")
+fi
+RUN_FLAGS+=(-e "HUNK_HOST=$(host_loopback_hostname "${ENGINE}")")
+
+# --- Run ---------------------------------------------------------------
+exec "${ENGINE}" run "${RUN_FLAGS[@]}" "${IMAGE}" copilot "${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}"
