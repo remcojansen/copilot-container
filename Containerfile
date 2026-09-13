@@ -25,35 +25,37 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8
 
-# ---- Base OS packages + common dev toolchain ----------------------------
+# ---- Bootstrap: minimal tools needed to add third-party apt repos -------
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl gnupg lsb-release \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---- Third-party apt repos (added before the main install so everything
+#      else installs in a single `apt-get update` + `install` pass) --------
+# Node.js: Ubuntu's own nodejs package is too old; add NodeSource's apt repo
+# directly (key + sources file) instead of piping their setup script to bash.
+RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+        | gpg --dearmor -o /usr/share/keyrings/nodesource.gpg \
+    && chmod 644 /usr/share/keyrings/nodesource.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" \
+        > /etc/apt/sources.list.d/nodesource.list
+
+# GitHub CLI (gh)
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list
+
+# ---- Base OS packages + common dev toolchain (single update+install) ----
+RUN apt-get update && apt-get install -y --no-install-recommends \
         git make sed gawk grep ripgrep \
         golang-go \
         openjdk-21-jdk-headless \
         python3 python3-pip python3-venv \
         unzip xz-utils tar less nano vim \
-        gosu glab \
-    && rm -rf /var/lib/apt/lists/*
-
-# ---- Node.js (required by Copilot CLI + markdownlint-cli) ---------------
-# Ubuntu's own nodejs package is too old; add NodeSource's apt repo directly
-# (key + sources file) instead of piping their setup script to bash.
-RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
-        | gpg --dearmor -o /usr/share/keyrings/nodesource.gpg \
-    && chmod 644 /usr/share/keyrings/nodesource.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" \
-        > /etc/apt/sources.list.d/nodesource.list \
-    && apt-get update && apt-get install -y --no-install-recommends nodejs \
-    && rm -rf /var/lib/apt/lists/*
-
-# ---- GitHub CLI (gh) ------------------------------------------------------
-RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-        -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
-    && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-        > /etc/apt/sources.list.d/github-cli.list \
-    && apt-get update && apt-get install -y --no-install-recommends gh \
+        glab openssh-server \
+        nodejs gh \
     && rm -rf /var/lib/apt/lists/*
 
 # ---- Hunk CLI client (talks to the host's Hunk loopback daemon only; the
@@ -84,9 +86,14 @@ RUN npm install -g "@github/copilot@${COPILOT_CLI_VERSION}" \
 COPY lib/entrypoint.sh /usr/local/bin/copilot-container-entrypoint
 RUN chmod +x /usr/local/bin/copilot-container-entrypoint
 
+# sshd config for the host<->container SSH link (see lib/sshd-config).
+# Replaces Ubuntu's default sshd_config outright: this image never runs a
+# general-purpose SSH server, only this narrowly-scoped one.
+COPY lib/sshd-config /etc/ssh/sshd_config
+RUN chmod 0644 /etc/ssh/sshd_config
+
 # A non-root home dir template; entrypoint creates/aligns the actual runtime
 # user's home at container start based on HOST_UID/HOST_GID.
 RUN mkdir -p /home/copilot && chmod 0755 /home/copilot
 
 ENTRYPOINT ["/usr/local/bin/copilot-container-entrypoint"]
-CMD ["copilot"]

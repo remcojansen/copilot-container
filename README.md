@@ -11,8 +11,9 @@ with [Hunk](https://hunk.dev/) (a host-side terminal diff reviewer).
 
 - [Podman](https://podman.io/) (preferred) or [Docker](https://www.docker.com/)
 - A GitHub token available as `GH_TOKEN` or `GITHUB_TOKEN` in your shell
-  environment (used for `gh`/Copilot auth; passed into the container each
-  run, never persisted to disk or baked into the image)
+  environment, or `gh` installed and authenticated (`gh auth login`) —
+  used for `gh`/Copilot auth; passed into the container each run, never
+  persisted to disk or baked into the image
 - (Optional) [Hunk](https://hunk.dev/) installed on the host if you want
   agent-driven diff review
 
@@ -45,29 +46,34 @@ build`.
 
 1. Detects your container engine — **Podman first, Docker as fallback** (see
    [Engine selection](#engine-selection) below).
-2. Bind-mounts each `--mount`/`-m` path into the container at the **same
-   absolute path** as on the host (unless you give it an explicit
-   `host:container` mapping), so paths stay recognizable between host and
-   container. The *first* `--mount` is the primary project: the container's
-   working directory, and the source for the per-project state volume name.
-3. Creates/reuses a **per-project named volume** (derived from the primary
-   project's absolute path) mounted at the container user's home directory,
-   so Copilot CLI config, permission approvals, and session/history state
-   persist across runs of the same project without mixing state between
-   different projects.
+2. Bind-mounts each `--mount`/`-m` path into the container at the same
+   absolute path as on the host (unless you give an explicit
+   `host:container` mapping). The *first* `--mount` is the primary project:
+   the container's working directory, and the source for the per-project
+   state volume name.
+3. Creates/reuses a per-project named volume (derived from the primary
+   project's absolute path), mounted at the container user's home
+   directory, so Copilot CLI config, permission approvals, and
+   session/history state persist per project without mixing between
+   projects.
 4. If `~/.gitconfig` exists on the host, bind-mounts it read-only into the
    container (see [Git configuration](#git-configuration) below).
 5. If `~/.copilot/config.json` and/or `~/.copilot/copilot-instructions.md`
    exist on the host, bind-mounts them read-only into the container (see
    [Copilot config and instructions](#copilot-config-and-instructions)
    below).
-6. Passes `GH_TOKEN`/`GITHUB_TOKEN` from your host shell into the container
-   environment for that run only (nothing is written to the image or to the
-   persistent volume).
+6. Passes `GH_TOKEN`/`GITHUB_TOKEN` from your host shell into the remote
+   `copilot` invocation for that run only (nothing is written to the image
+   or the persistent volume). Falls back to `gh auth token` if `GH_TOKEN`
+   is unset but `gh` is authenticated.
 7. Adds the host-loopback route (`--add-host`) so tools inside the container
    can reach services bound to the host's loopback interface — this is what
    makes the [Hunk integration](#hunk-integration) work.
-8. Execs into `copilot`, forwarding any args you passed after `--`.
+8. Starts the container **detached**, then connects in over a narrowly-scoped,
+   loopback-only SSH session (fresh single-use keypair, torn down with the
+   container) to run `copilot` as the aligned runtime user, forwarding any
+   args you passed after `--`. See [Architecture](#architecture) below for
+   why.
 
 ### Options
 
@@ -75,16 +81,20 @@ build`.
 copilot-container -m <path> [-m <path> ...] [options] [-- <copilot CLI args...>]
 
   -m, --mount <host_path>[:<container_path>]
-                                 Bind-mount a host directory (repeatable,
-                                 at least one required). Defaults to the
-                                 same path in the container as on the host.
-                                 The first --mount is the primary project.
+                                 Bind-mount a host directory (repeatable).
+                                 If no --mount/-m is given at all, defaults
+                                 to the current working directory (`pwd`).
+                                 Defaults to the same path in the container
+                                 as on the host. The first --mount is the
+                                 primary project.
   -i, --image <name>            Container image to run (default: copilot-container)
   -e, --engine <podman|docker>  Force a specific container engine
   -g, --gitconfig <path>        Host file to mount read-only as ~/.gitconfig
                                  (default: ~/.gitconfig)
   --gpg-sign                    Enable GPG commit signing (forwards host gpg-agent socket
                                  and mounts public keyrings read-only)
+  --ssh-sign                    Enable SSH commit signing (gpg.format=ssh) by
+                                 forwarding host's SSH_AUTH_SOCK (ssh-agent)
   -h, --help                    Show help
 ```
 
@@ -102,9 +112,27 @@ Environment variables:
 
 | Variable | Purpose |
 |---|---|
-| `GH_TOKEN` / `GITHUB_TOKEN` | Forwarded into the container for the run |
+| `GH_TOKEN` / `GITHUB_TOKEN` | Forwarded into the container for the run (falls back to `gh auth token` if unset) |
 | `COPILOT_CONTAINER_ENGINE` | Force `podman` or `docker` |
 | `COPILOT_CONTAINER_IMAGE`  | Default image name/tag to run |
+
+## Architecture
+
+The container always starts **detached** (`run -d`); the launcher then
+connects in over a single SSH session as the aligned runtime user (`copilot`)
+to run the `copilot` CLI — there's no `run -it` attach path. This applies to
+every invocation, not just `--gpg-sign`/`--ssh-sign`: a bind-mounted socket
+doesn't carry live `connect()` semantics under virtiofs (Podman machine /
+Docker Desktop on macOS), so those flags need a real connection anyway, and
+one code path is simpler than branching the launch flow on whether signing
+was requested.
+
+Each run generates a fresh, single-use ed25519 keypair and `authorized_keys`
+entry (loopback-only, published on an ephemeral port, key-only auth,
+`no-x11-forwarding`), passed to the container via an environment variable
+(not bind-mounted, to avoid virtiofs staleness on freshly created files).
+The launcher waits for the container's sshd to come up, connects in, and
+tears everything down (container + temporary keypair) when the session ends.
 
 ## Engine selection
 
@@ -127,20 +155,26 @@ freely per project.
 
 Two files are the exception: if `$HOME/.copilot/config.json` and/or
 `$HOME/.copilot/copilot-instructions.md` already exist on the **host**,
-they're bind-mounted read-only into the container at the same relative
-path. Nothing is baked into the image or copied — the container simply
-sees whatever you already have configured on your host machine. If a file
-doesn't exist on the host, it's just absent inside the container too (no
-fallback).
+the container picks up your existing settings instead of starting blank.
+If a file doesn't exist on the host, it's just absent inside the container
+too (no fallback).
 
-Because they're read-only, changes made from inside the container (e.g.
-running `copilot` and having it update its own config) won't persist —
-edit these files on the host if you want to change them.
+`copilot-instructions.md` is bind-mounted read-only at the same relative
+path — it's not written to by the CLI, so edit it on the host if you want
+to change it. It's Copilot CLI's **user-level instructions file** (applies
+across all repositories you use inside the container) — it is never copied
+into a project's workspace, so it never conflicts with or overrides a
+project's own `AGENTS.md` / `.github/copilot-instructions.md`.
 
-`copilot-instructions.md` is Copilot CLI's **user-level instructions file**
-(applies across all repositories you use inside the container) — it is
-never copied into a project's workspace, so it never conflicts with or
-overrides a project's own `AGENTS.md` / `.github/copilot-instructions.md`.
+`config.json` is different: the CLI writes to it at runtime (e.g. to
+remember per-directory trust approvals), so it can't simply be bind-mounted
+read-only without breaking that. Instead, the host's `config.json` is
+mounted read-only to a staging path, and the entrypoint seed-copies it into
+the writable per-project volume the *first* time a project is run. From
+then on, that project's volume owns its `config.json`: approvals and other
+config changes made from inside the container persist across sessions,
+and later edits to the host file aren't re-synced (matching how the rest
+of `~/.copilot` behaves).
 
 ## Git configuration
 
@@ -161,19 +195,28 @@ It's mounted **read-only**: changes made from inside the container (e.g.
 `git config --global ...`) do not persist back to the host file. Run those
 commands on the host instead.
 
-### GPG Commit Signing
+### Commit signing (GPG / SSH)
 
-Pass `--gpg-sign` to forward your host's running `gpg-agent` socket into the
-container and mount your public keyrings (`pubring.kbx` / `pubring.gpg`)
-read-only. Your private key material remains strictly on the host.
+`--gpg-sign` and `--ssh-sign` forward your host's `gpg-agent` socket and/or
+`SSH_AUTH_SOCK` (ssh-agent) into the container, over the same SSH session
+the launcher always establishes (see [Architecture](#architecture) above).
+Your private key material remains strictly on the host — only the live
+agent socket is forwarded, plus (for GPG) your public keyrings
+(`pubring.kbx` / `pubring.gpg`) read-only.
 
 ```sh
 copilot-container -m ~/code/my-project --gpg-sign
+copilot-container -m ~/code/my-project --ssh-sign
 ```
 
-Ensure `gpg-agent` is active on your host before running. Because `~/.gitconfig`
-is mounted read-only, Git inside the container inherits your `user.signingKey`
-and `commit.gpgSign` configuration automatically.
+Only unix-domain socket forwards are permitted at all (`AllowStreamLocalForwarding
+remote`, no TCP/X11/native agent forwarding); the session's key is single-use
+and torn down with the container, so nothing else is reachable through it.
+
+Ensure `gpg-agent`/`ssh-agent` is active on your host before running. Because
+`~/.gitconfig` is mounted read-only, Git inside the container inherits your
+`user.signingKey`/`gpg.format` and `commit.gpgSign` configuration
+automatically.
 
 ## Hunk integration
 
@@ -208,26 +251,26 @@ Built from `ubuntu:24.04`, the image includes:
   `vim`, `tar`
 - `markdownlint-cli`
 - `hunk` (CLI client only — see [Hunk integration](#hunk-integration))
-- `gosu`, used by the entrypoint to run Copilot CLI as a non-root user whose
-  UID/GID match your host user (so files written into mounted directories
-  aren't root-owned)
+- `openssh-server`, used to accept the launcher's per-run SSH session (see
+  [Architecture](#architecture) above) — the entrypoint aligns the runtime
+  user's UID/GID and seeds Copilot config, then hands off to sshd as the
+  container's foreground process; `copilot` itself runs inside that SSH
+  session, not the entrypoint
 
 This list is expected to grow — add packages to `Containerfile` as needed.
 
 ### Package installation approach
 
-Packages available in Ubuntu's own apt repositories (`git`, `make`, `sed`,
+Packages available in Ubuntu's apt repositories (`git`, `make`, `sed`,
 `gawk`, `grep`, `ripgrep`, `golang-go`, `openjdk-21-jdk-headless`,
-`python3`, `vim`, `tar`, `gosu`, `glab`, ...) are installed via `apt-get`
-rather than downloaded directly, since they're GPG-signed by Ubuntu,
-mirrored, and receive security updates automatically. `gh` and Node.js
-(needed by Copilot CLI/markdownlint-cli, newer than Ubuntu's packaged
-version) are installed from their own signed apt repositories by fetching
-the maintainer's GPG key and writing the apt sources file directly, rather
-than piping an install script to `bash`. Copilot CLI and Hunk have no apt
-packages: Copilot CLI is installed via `npm` (pinned version, verified by
-npm's registry integrity hash), and Hunk's release tarball is downloaded
-and checksum-verified against its published `SHA256SUMS` before install.
+`python3`, `vim`, `tar`, `openssh-server`, `glab`, ...) are installed via
+`apt-get`, since they're GPG-signed, mirrored, and get security updates
+automatically. `gh` and Node.js (newer than Ubuntu's packaged version) are
+installed from their own signed apt repositories (maintainer's GPG key +
+sources file), rather than piping an install script to `bash`. Copilot CLI
+is installed via `npm` (pinned version, verified by npm's registry
+integrity hash); Hunk's release tarball is checksum-verified against its
+published `SHA256SUMS`.
 
 ## Updating the pinned Copilot CLI version
 
@@ -245,21 +288,6 @@ Once you've verified the new version works well, update the default in
 the same way via their respective `--build-arg` options. The Ubuntu base image
 is pinned by digest and should be refreshed deliberately when updating the
 base OS.
-
-## Design notes
-
-- **Mount paths match the host** so they stay recognizable and Hunk's
-  `--repo <path>` matching stays predictable. The first `-m` is the primary
-  project (working directory + state-volume name source).
-- **`~/.copilot` is one writable per-project volume**, holding config,
-  permission approvals, and session history together, since they evolve
-  together. `config.json` and `copilot-instructions.md` are read-only
-  bind-mounted from the host *inside* that volume, so the container
-  reflects your real settings.
-- **Packages install via Ubuntu's signed apt repos** where available. `gh`
-  and Node.js use their own signed repos (GPG key + sources file added
-  directly). Copilot CLI relies on npm's integrity hashes; Hunk's release
-  tarball is checksum-verified against its `SHA256SUMS`.
 
 ## Known limitations / not yet implemented
 

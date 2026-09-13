@@ -1,0 +1,57 @@
+# sshd config for copilot-container's host<->container link. The host
+# launcher always connects in over SSH as the container's dynamically
+# aligned runtime user ("copilot") to run the actual Copilot CLI command
+# (see bin/copilot-container and lib/entrypoint.sh) — there's no separate
+# `podman/docker run -it` attach. When --gpg-sign/--ssh-sign was
+# requested, this same connection also carries gpg-agent/ssh-agent socket
+# forwards. Not a general-purpose SSH server: loopback-only, key-only,
+# single user, regenerated fresh (host key + authorized_keys) every run.
+
+# sshd config for copilot-container's host<->container link. The host
+# launcher always connects in over SSH as the container's dynamically
+# aligned runtime user ("copilot") to run the actual Copilot CLI command
+# (see bin/copilot-container and lib/entrypoint.sh) — there's no separate
+# `podman/docker run -it` attach. When --gpg-sign/--ssh-sign was
+# requested, this same connection also carries gpg-agent/ssh-agent socket
+# forwards. Not a general-purpose SSH server: key-only, single user,
+# regenerated fresh (host key + authorized_keys) every run. Loopback-only
+# reachability is enforced host-side via `-p 127.0.0.1::2222`; a
+# ListenAddress restriction here would break port publishing.
+
+Port 2222
+AddressFamily inet
+
+HostKey /etc/ssh/copilot_container_host_key
+PidFile /run/copilot-container-sshd.pid
+
+LogLevel ERROR
+
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+PermitRootLogin no
+PubkeyAuthentication yes
+AuthorizedKeysFile /home/copilot/.ssh/authorized_keys
+AllowUsers copilot
+UsePAM no
+MaxAuthTries 2
+MaxSessions 2
+LoginGraceTime 10
+
+# Only unix-domain socket forwards are ever used (gpg-agent/ssh-agent);
+# no X11 or native agent forwarding is needed. AllowTcpForwarding must stay
+# at least `remote` (not `no`): sshd's remote streamlocal-forward permission
+# check is gated on it too, so `no` silently refuses unix-socket forwards as
+# well even with AllowStreamLocalForwarding yes. `remote` still blocks local
+# (-L) forwards, GatewayPorts stays no, and the launcher never requests an
+# actual TCP listener.
+AllowTcpForwarding remote
+AllowStreamLocalForwarding yes
+AllowAgentForwarding no
+GatewayPorts no
+X11Forwarding no
+PermitTunnel no
+StreamLocalBindUnlink yes
+
+ClientAliveInterval 5
+ClientAliveCountMax 3

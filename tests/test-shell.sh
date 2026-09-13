@@ -46,6 +46,11 @@ assert_output_contains "GPG agent socket not found" \
     env HOME="${TEST_DIR}/home" GNUPGHOME="${TEST_DIR}/home/.gnupg" "${LAUNCHER}" -m "${TEST_DIR}" --gpg-sign
 pass "--gpg-sign fails when GPG agent socket is missing"
 
+assert_output_contains "SSH_AUTH_SOCK is not set to a valid socket" \
+    env -u SSH_AUTH_SOCK HOME="${TEST_DIR}/home" "${LAUNCHER}" -m "${TEST_DIR}" --ssh-sign
+pass "--ssh-sign fails when SSH_AUTH_SOCK is missing"
+
+# --- Fake podman: always starts detached, always publishes port 65000 ----
 FAKE_BIN="${TEST_DIR}/bin"
 CAPTURE="${TEST_DIR}/run-args"
 mkdir -p "${FAKE_BIN}"
@@ -56,29 +61,72 @@ printf '%s\n' \
     '    [ "${2:-}" = inspect ] && exit 1' \
     '    [ "${2:-}" = create ] && exit 0' \
     '    ;;' \
+    '  port)' \
+    '    echo "127.0.0.1:65000"' \
+    '    exit 0' \
+    '    ;;' \
     '  run)' \
+    '    shift' \
     '    printf "%s\n" "$@" > "${CAPTURE}"' \
+    '    echo fake-container-id' \
+    '    exit 0' \
+    '    ;;' \
+    '  rm)' \
     '    exit 0' \
     '    ;;' \
     'esac' \
     'exit 1' > "${FAKE_BIN}/podman"
 chmod 755 "${FAKE_BIN}/podman"
 
-HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" PATH="${FAKE_BIN}:${PATH}" \
+# --- Fake ssh: succeeds on the readiness ping (BatchMode=yes) immediately;
+# the real interactive session's args are captured to SSH_CAPTURE.
+SSH_CAPTURE="${TEST_DIR}/ssh-args"
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'for a in "$@"; do' \
+    '  if [ "${a}" = "BatchMode=yes" ]; then exit 0; fi' \
+    'done' \
+    'printf "%s\n" "$@" > "${SSH_CAPTURE}"' \
+    'exit 0' > "${FAKE_BIN}/ssh"
+chmod 755 "${FAKE_BIN}/ssh"
+
+HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CAPTURE="${SSH_CAPTURE}" PATH="${FAKE_BIN}:${PATH}" \
     "${LAUNCHER}" -m "${PROJECT}" >/dev/null
 
 home_volume_line="$(grep -nE ':/home/copilot$' "${CAPTURE}" | head -n1 | cut -d: -f1)"
-config_line="$(grep -nFx "${TEST_DIR}/home/.copilot/config.json:/home/copilot/.copilot/config.json:ro" "${CAPTURE}" | cut -d: -f1)"
+config_line="$(grep -nFx "${TEST_DIR}/home/.copilot/config.json:/home/copilot/.copilot-config-seed.json:ro" "${CAPTURE}" | cut -d: -f1)"
 instructions_line="$(grep -nFx "${TEST_DIR}/home/.copilot/copilot-instructions.md:/home/copilot/.copilot/copilot-instructions.md:ro" "${CAPTURE}" | cut -d: -f1)"
 
 [ -n "${home_volume_line}" ] || fail "state volume was not passed to the engine"
-[ -n "${config_line}" ] || fail "read-only Copilot config mount was not passed"
+[ -n "${config_line}" ] || fail "read-only Copilot config seed mount was not passed"
 [ -n "${instructions_line}" ] || fail "read-only instructions mount was not passed"
 [ "${home_volume_line}" -lt "${config_line}" ] ||
     fail "state volume must precede the Copilot config mount"
 [ "${home_volume_line}" -lt "${instructions_line}" ] ||
     fail "state volume must precede the instructions mount"
 pass "state volume precedes nested read-only mounts"
+
+grep -Fxq -- "-d" "${CAPTURE}" || fail "container is not started detached (-d)"
+pass "container is always started detached"
+
+[ -f "${SSH_CAPTURE}" ] || fail "launcher did not connect in over ssh"
+grep -Fq "copilot@127.0.0.1" "${SSH_CAPTURE}" || fail "ssh session did not target copilot@127.0.0.1"
+grep -Fq "IdentitiesOnly=yes" "${SSH_CAPTURE}" || fail "ssh session did not specify IdentitiesOnly=yes"
+grep -Fq "cd ${PROJECT} &&" "${SSH_CAPTURE}" || fail "remote command did not cd into the project"
+grep -Fq "exec copilot" "${SSH_CAPTURE}" || fail "remote command did not exec copilot"
+pass "launcher always connects in over ssh to run copilot"
+
+rm -f "${SSH_CAPTURE}" "${CAPTURE}"
+
+# Test default mount (no -m given) falls back to the current directory
+(cd "${PROJECT}" && HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CAPTURE="${SSH_CAPTURE}" PATH="${FAKE_BIN}:${PATH}" \
+    "${LAUNCHER}" >/dev/null)
+physical_project="$(cd -- "${PROJECT}" && pwd -P)"
+grep -nFx "${physical_project}:${PROJECT}" "${CAPTURE}" >/dev/null ||
+    fail "no --mount given did not default to the current directory"
+pass "no --mount given defaults to the current directory"
+
+rm -f "${SSH_CAPTURE}" "${CAPTURE}"
 
 # Test --gpg-sign with socket & pubring present
 mkdir -p "${TEST_DIR}/home/.gnupg"
@@ -89,19 +137,41 @@ chmod 755 "${FAKE_GPGCONF}"
 
 python3 -c "import socket; s = socket.socket(socket.AF_UNIX); s.bind('${TEST_DIR}/home/.gnupg/S.gpg-agent')"
 
-env HOME="${TEST_DIR}/home" GNUPGHOME="${TEST_DIR}/home/.gnupg" CAPTURE="${CAPTURE}" PATH="${FAKE_BIN}:${PATH}" \
+env HOME="${TEST_DIR}/home" GNUPGHOME="${TEST_DIR}/home/.gnupg" CAPTURE="${CAPTURE}" \
+    SSH_CAPTURE="${SSH_CAPTURE}" PATH="${FAKE_BIN}:${PATH}" \
     "${LAUNCHER}" -m "${PROJECT}" --gpg-sign >/dev/null
 
-gpg_socket_line="$(grep -nFx "${TEST_DIR}/home/.gnupg/S.gpg-agent:/home/copilot/.gnupg/S.gpg-agent" "${CAPTURE}" | cut -d: -f1)"
-gpg_kbx_line="$(grep -nFx "${TEST_DIR}/home/.gnupg/pubring.kbx:/home/copilot/.gnupg/pubring.kbx:ro" "${CAPTURE}" | cut -d: -f1)"
+[ -f "${SSH_CAPTURE}" ] || fail "--gpg-sign did not invoke the real ssh session"
 
-[ -n "${gpg_socket_line}" ] || fail "--gpg-sign did not mount agent socket"
-[ -n "${gpg_kbx_line}" ] || fail "--gpg-sign did not mount pubring.kbx"
-[ "${home_volume_line}" -lt "${gpg_socket_line}" ] || fail "state volume must precede gpg socket mount"
-pass "--gpg-sign mounts agent socket and public keyrings"
+gpg_kbx_line="$(grep -nFx "${TEST_DIR}/home/.gnupg/pubring.kbx:/home/copilot/.copilot-container-bridge/pubring.kbx:ro" "${CAPTURE}" | cut -d: -f1)"
+gpg_forward_line="$(grep -nFx "/home/copilot/.copilot-container-bridge/S.gpg-agent:${TEST_DIR}/home/.gnupg/S.gpg-agent" "${SSH_CAPTURE}" | cut -d: -f1)"
+gnupghome_line="$(grep -nFq "GNUPGHOME=" "${SSH_CAPTURE}" && echo yes || echo "")"
+
+[ -n "${gpg_kbx_line}" ] || fail "--gpg-sign did not mount pubring.kbx into the bridge dir"
+[ -n "${gpg_forward_line}" ] || fail "--gpg-sign did not forward the gpg-agent socket over ssh"
+[ -n "${gnupghome_line}" ] || fail "--gpg-sign did not export GNUPGHOME in the remote command"
+grep -Fq "copilot@127.0.0.1" "${SSH_CAPTURE}" || fail "ssh session did not target copilot@127.0.0.1"
+pass "--gpg-sign mounts public keyrings and forwards the agent socket over ssh"
 
 assert_output_contains "HOST_UID must be a numeric user ID" \
     env HOST_UID=invalid bash "${ENTRYPOINT}"
 pass "invalid runtime UID is rejected"
+
+# --- Readiness-timeout diagnostics: a broken/unready sshd should surface
+# the last ssh error, not just a bare "timed out" message.
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'echo "Permission denied (publickey)." >&2' \
+    'exit 255' > "${FAKE_BIN}/ssh"
+chmod 755 "${FAKE_BIN}/ssh"
+
+readiness_output="$(HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" \
+    COPILOT_CONTAINER_POLL_ATTEMPTS=2 PATH="${FAKE_BIN}:${PATH}" \
+    "${LAUNCHER}" -m "${PROJECT}" 2>&1)" && fail "expected launcher to fail when ssh never becomes ready"
+printf '%s\n' "${readiness_output}" | grep -Fq "timed out waiting for container's sshd to become ready" ||
+    fail "readiness timeout did not report the expected message"
+printf '%s\n' "${readiness_output}" | grep -Fq "Permission denied (publickey)." ||
+    fail "readiness timeout did not surface the last ssh error"
+pass "readiness timeout surfaces the last ssh error instead of a bare timeout"
 
 echo "All shell tests passed."

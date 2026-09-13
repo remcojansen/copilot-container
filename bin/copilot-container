@@ -4,19 +4,30 @@
 # defaults: host-identical bind mounts, a per-project persistent state
 # volume, GH token passthrough, and host-loopback reachability for Hunk.
 #
+# The container always starts detached; this launcher then connects in
+# over a narrowly-scoped SSH session (loopback-only, single-use key,
+# always torn down with the container) to actually run the `copilot` CLI
+# as the aligned runtime user. This is not just for --gpg-sign/--ssh-sign:
+# a bind-mounted socket doesn't carry live connect() semantics under
+# virtiofs (Podman machine / Docker Desktop on macOS), so those flags rely
+# on it too, but running the same path unconditionally is simpler than
+# branching the whole launch flow on whether signing was requested.
+#
 # Usage:
 #   copilot-container -m <path> [-m <path> ...] [options] [-- <copilot CLI args...>]
 #
 # Options:
 #   -m, --mount <host_path>[:<container_path>]
-#                            Bind-mount a host directory (repeatable). If no
-#                            container path is given, it is mounted at the
-#                            same absolute path inside the container as on
-#                            the host, so paths stay recognizable. The
-#                            *first* --mount given is treated as the primary
-#                            project: its directory is the container's
-#                            working directory, and its path is used to
-#                            derive the per-project state volume name.
+#                            Bind-mount a host directory (repeatable).
+#                            Defaults to the current directory if omitted.
+#                            If no container path is given, it is mounted
+#                            at the same absolute path inside the
+#                            container as on the host, so paths stay
+#                            recognizable. The *first* --mount given is
+#                            treated as the primary project: its directory
+#                            is the container's working directory, and its
+#                            path is used to derive the per-project state
+#                            volume name.
 #   -i, --image <name>       Container image to run (default: copilot-container)
 #   -e, --engine <podman|docker>
 #                            Force a specific container engine
@@ -26,15 +37,17 @@
 #                            profiles (e.g. ~/.gitconfig-work) per project.
 #   --gpg-sign               Enable GPG commit signing by forwarding host's
 #                            gpg-agent socket and mounting public keyrings.
+#   --ssh-sign               Enable SSH commit signing (gpg.format=ssh) by
+#                            forwarding host's SSH_AUTH_SOCK (ssh-agent).
 #   -h, --help               Show this help and exit
-#
-# At least one --mount is required.
 #
 # Any arguments after `--` are forwarded verbatim to the `copilot` CLI
 # inside the container (e.g. --model, permission flags, etc.).
 #
 # Environment:
 #   GH_TOKEN / GITHUB_TOKEN   Passed into the container if set on the host.
+#                             GH_TOKEN falls back to `gh auth token` when
+#                             unset and `gh` is available.
 #   COPILOT_CONTAINER_ENGINE  Force engine selection (podman|docker).
 #   COPILOT_CONTAINER_IMAGE   Default image name/tag to run.
 
@@ -42,9 +55,6 @@ set -euo pipefail
 
 # --- Container engine detection & host-loopback helpers -------------------
 # Podman is preferred over Docker; override with COPILOT_CONTAINER_ENGINE.
-# Kept inline (rather than sourced from a separate file) so this script has
-# no path dependency on the rest of the repo and stays correct even when
-# installed/symlinked elsewhere on PATH.
 
 detect_engine() {
     if [ -n "${COPILOT_CONTAINER_ENGINE:-}" ]; then
@@ -110,14 +120,89 @@ host_loopback_hostname() {
     esac
 }
 
+# generate_bridge_credentials: creates an ephemeral keypair + authorized_keys
+# for this run's SSH login, in BRIDGE_TMP (caller creates/removes it via the
+# EXIT trap). Both agent-socket forwards are always permitted regardless of
+# --gpg-sign/--ssh-sign: harmless when unused, and keeping this unconditional
+# avoids yet another branch in an already-branchy launcher.
+generate_bridge_credentials() {
+    ssh-keygen -q -t ed25519 -N "" -f "${BRIDGE_TMP}/id_ed25519"
+
+    # No pty/shell beyond the one remote command ssh is told to run. Unix
+    # socket forwards aren't further restricted by path here: sshd's
+    # authorized_keys `permitlisten` option only accepts `[host:]port`
+    # syntax, not socket paths (unlike `permitopen`, which does support a
+    # `path` form) — a `permitlisten="<path>"` entry makes sshd reject the
+    # whole authorized_keys line as malformed, locking out every key.
+    # Scoping is instead handled by sshd-config (AllowStreamLocalForwarding
+    # limits forwards to unix sockets) plus this being a single-use key for
+    # a single narrow session.
+    authorized_key_opts="no-x11-forwarding,no-user-rc"
+
+    # Passed as an env var (base64, single line) rather than bind-mounted:
+    # a freshly created host file can hit a stale virtiofs "not found"
+    # cache on Podman machine when mounted moments after creation, so the
+    # entrypoint writes it into place from the env var instead.
+    AUTHORIZED_KEYS_B64="$(printf '%s %s\n' "${authorized_key_opts}" \
+        "$(cat "${BRIDGE_TMP}/id_ed25519.pub")" | base64 | tr -d '\n')"
+}
+
+# wait_for_published_port <engine> <container_name>: polls until the
+# container's sshd port is published, and prints the host-side port number.
+wait_for_published_port() {
+    engine="$1"
+    container_name="$2"
+    port=""
+    for _ in $(seq 1 "${COPILOT_CONTAINER_POLL_ATTEMPTS}"); do
+        port="$("${engine}" port "${container_name}" 2222/tcp 2>/dev/null \
+            | tail -n1 | sed -E 's/.*:([0-9]+)$/\1/')"
+        [ -n "${port}" ] && break
+        sleep 0.2
+    done
+    if [ -z "${port}" ]; then
+        echo "error: copilot-container: container's sshd port was never published" >&2
+        return 1
+    fi
+    echo "${port}"
+}
+
+# wait_for_ssh_ready <ssh_opts...>: retries a lightweight non-interactive
+# connection until the container's sshd actually accepts the key, so the
+# real interactive session below isn't the first thing to discover
+# "container not ready yet" and doesn't confuse that with a genuine
+# forwarding/auth failure. On timeout, surfaces the last attempt's stderr
+# so a genuine misconfiguration (e.g. broken authorized_keys) doesn't just
+# look like "container was slow to start".
+wait_for_ssh_ready() {
+    local last_err=""
+    for _ in $(seq 1 "${COPILOT_CONTAINER_POLL_ATTEMPTS}"); do
+        if last_err="$(ssh -o BatchMode=yes "$@" copilot@127.0.0.1 true 2>&1)"; then
+            return 0
+        fi
+        sleep 0.2
+    done
+    echo "error: copilot-container: timed out waiting for container's sshd to become ready" >&2
+    if [ -n "${last_err}" ]; then
+        echo "last ssh attempt's error was:" >&2
+        printf '%s\n' "${last_err}" | sed 's/^/  /' >&2
+    fi
+    return 1
+}
+
 IMAGE="${COPILOT_CONTAINER_IMAGE:-copilot-container}"
 GITCONFIG_PATH="${HOME}/.gitconfig"
 GPG_SIGN=0
+SSH_SIGN=0
 MOUNT_ARGS=()
 FORWARD_ARGS=()
 
+# How many 0.2s polling attempts (~150 => 30s) to wait for the container's
+# port to be published / its sshd to accept a connection. Overridable
+# mainly so tests can shorten a deliberately-failing wait.
+COPILOT_CONTAINER_POLL_ATTEMPTS="${COPILOT_CONTAINER_POLL_ATTEMPTS:-150}"
+
 usage() {
-    sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,52p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 require_option_value() {
@@ -164,6 +249,10 @@ while [ $# -gt 0 ]; do
             GPG_SIGN=1
             shift
             ;;
+        --ssh-sign)
+            SSH_SIGN=1
+            shift
+            ;;
         -h|--help)
             usage
             exit 0
@@ -181,9 +270,7 @@ while [ $# -gt 0 ]; do
 done
 
 if [ "${#MOUNT_ARGS[@]}" -eq 0 ]; then
-    echo "error: at least one --mount <path> is required" >&2
-    usage >&2
-    exit 1
+    MOUNT_ARGS=("${PWD}")
 fi
 
 if [ "${GITCONFIG_PATH}" != "${HOME}/.gitconfig" ] && [ ! -f "${GITCONFIG_PATH}" ]; then
@@ -191,8 +278,15 @@ if [ "${GITCONFIG_PATH}" != "${HOME}/.gitconfig" ] && [ ! -f "${GITCONFIG_PATH}"
     exit 1
 fi
 
-# --- Validate GPG signing requirements -----------------------------------
+# --- Validate GPG/SSH signing requirements -------------------------------
+# Both --gpg-sign and --ssh-sign forward a live host socket in over the
+# SSH session this launcher always establishes (see below); a bind-mounted
+# socket wouldn't carry live connect() semantics under virtiofs.
+BRIDGE_DIR="/home/copilot/.copilot-container-bridge"
+
 GPG_FLAGS=()
+REMOTE_ENV_VARS=()
+gpg_socket=""
 if [ "${GPG_SIGN}" -eq 1 ]; then
     gpg_socket="$(gpgconf --list-dirs agent-socket 2>/dev/null || echo "${HOME}/.gnupg/S.gpg-agent")"
     if [ ! -S "${gpg_socket}" ]; then
@@ -200,16 +294,27 @@ if [ "${GPG_SIGN}" -eq 1 ]; then
         echo "hint: ensure gpg-agent is running on the host (e.g. gpgconf --launch gpg-agent)" >&2
         exit 1
     fi
-    GPG_FLAGS+=(-v "${gpg_socket}:/home/copilot/.gnupg/S.gpg-agent")
     if [ -f "${HOME}/.gnupg/pubring.kbx" ]; then
-        GPG_FLAGS+=(-v "${HOME}/.gnupg/pubring.kbx:/home/copilot/.gnupg/pubring.kbx:ro")
+        GPG_FLAGS+=(-v "${HOME}/.gnupg/pubring.kbx:${BRIDGE_DIR}/pubring.kbx:ro")
     fi
     if [ -f "${HOME}/.gnupg/pubring.gpg" ]; then
-        GPG_FLAGS+=(-v "${HOME}/.gnupg/pubring.gpg:/home/copilot/.gnupg/pubring.gpg:ro")
+        GPG_FLAGS+=(-v "${HOME}/.gnupg/pubring.gpg:${BRIDGE_DIR}/pubring.gpg:ro")
     fi
     if [ -f "${HOME}/.gnupg/trustdb.gpg" ]; then
-        GPG_FLAGS+=(-v "${HOME}/.gnupg/trustdb.gpg:/home/copilot/.gnupg/trustdb.gpg:ro")
+        GPG_FLAGS+=(-v "${HOME}/.gnupg/trustdb.gpg:${BRIDGE_DIR}/trustdb.gpg:ro")
     fi
+    REMOTE_ENV_VARS+=("GNUPGHOME=${BRIDGE_DIR}")
+fi
+
+ssh_agent_sock_host=""
+if [ "${SSH_SIGN}" -eq 1 ]; then
+    ssh_agent_sock_host="${SSH_AUTH_SOCK:-}"
+    if [ -z "${ssh_agent_sock_host}" ] || [ ! -S "${ssh_agent_sock_host}" ]; then
+        echo "error: --ssh-sign requested, but SSH_AUTH_SOCK is not set to a valid socket" >&2
+        echo "hint: ensure ssh-agent is running on the host and SSH_AUTH_SOCK is exported" >&2
+        exit 1
+    fi
+    REMOTE_ENV_VARS+=("SSH_AUTH_SOCK=${BRIDGE_DIR}/ssh-agent.sock")
 fi
 
 ENGINE="$(detect_engine)"
@@ -263,15 +368,14 @@ VOLUME_NAME="copilot-container_${project_slug}_${path_hash}"
 "${ENGINE}" volume inspect "${VOLUME_NAME}" >/dev/null 2>&1 || \
     "${ENGINE}" volume create "${VOLUME_NAME}" >/dev/null
 
-# --- Host UID/GID for the entrypoint's privilege drop ----------------------
+# --- Host UID/GID for aligning the container's runtime user --------------
 HOST_UID="$(id -u)"
 HOST_GID="$(id -g)"
 
 # --- Host git configuration --------------------------------------------
 # Mounted read-only: the container can read your identity/aliases, but
 # changes made inside the container (e.g. `git config --global ...`) do
-# not write back to the host file. Which host file to use is configurable
-# via -g/--gitconfig, e.g. to switch between multiple gitconfig profiles.
+# not write back to the host file.
 GIT_FLAGS=()
 if [ -f "${GITCONFIG_PATH}" ]; then
     GIT_FLAGS+=(-v "${GITCONFIG_PATH}:/home/copilot/.gitconfig:ro")
@@ -282,18 +386,35 @@ fi
 # defaults are baked into the image, so these reflect whatever you already
 # have configured on the host. Everything else under ~/.copilot (session
 # state, permissions-config.json, etc.) stays in the per-project named
-# volume, unaffected by these two file mounts.
+# volume, unaffected by these mounts.
+#
+# config.json is mounted to a staging path rather than its final location:
+# the entrypoint seed-copies it into the writable per-project volume on
+# first run, so directory-trust approvals and other config updates made
+# from inside the container persist across sessions (they'd otherwise fail
+# with "permission denied" against a read-only bind mount).
 COPILOT_FLAGS=()
 if [ -f "${HOME}/.copilot/config.json" ]; then
-    COPILOT_FLAGS+=(-v "${HOME}/.copilot/config.json:/home/copilot/.copilot/config.json:ro")
+    COPILOT_FLAGS+=(-v "${HOME}/.copilot/config.json:/home/copilot/.copilot-config-seed.json:ro")
 fi
 if [ -f "${HOME}/.copilot/copilot-instructions.md" ]; then
     COPILOT_FLAGS+=(-v "${HOME}/.copilot/copilot-instructions.md:/home/copilot/.copilot/copilot-instructions.md:ro")
 fi
 
 # --- Assemble run flags ------------------------------------------------
+CONTAINER_NAME="copilot-container-$$-${RANDOM}"
+BRIDGE_TMP="$(mktemp -d)"
+# Single early trap: covers both normal exit and any failure between here
+# and the final `ssh -t` below. Since this launcher no longer ends via
+# `exec`, this reliably runs after the interactive session finishes too.
+trap 'rm -rf "${BRIDGE_TMP}"; "${ENGINE}" rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true' EXIT
+
+generate_bridge_credentials
+
 RUN_FLAGS=(
-    --rm -it
+    -d --rm
+    --name "${CONTAINER_NAME}"
+    -p "127.0.0.1::2222"
     "${BIND_FLAGS[@]}"
     -v "${VOLUME_NAME}:/home/copilot"
     "${GIT_FLAGS[@]}"
@@ -301,15 +422,23 @@ RUN_FLAGS=(
     "${GPG_FLAGS[@]}"
     -e "HOST_UID=${HOST_UID}"
     -e "HOST_GID=${HOST_GID}"
-    -e "PRIMARY_WORKSPACE=${PRIMARY_CONTAINER_PATH}"
+    -e "AUTHORIZED_KEYS_B64=${AUTHORIZED_KEYS_B64}"
 )
 
 # GH token passthrough (never persisted, only forwarded if present on host).
+# Falls back to `gh auth token` when GH_TOKEN isn't already set, so hosts
+# authenticated via `gh auth login` work without exporting anything.
+# Passed to the remote `copilot` invocation itself (see below), not as
+# container -e flags: sshd doesn't inherit its own daemon environment into
+# spawned login sessions.
+if [ -z "${GH_TOKEN:-}" ] && command -v gh >/dev/null 2>&1; then
+    GH_TOKEN="$(gh auth token 2>/dev/null || true)"
+fi
 if [ -n "${GH_TOKEN:-}" ]; then
-    RUN_FLAGS+=(-e "GH_TOKEN=${GH_TOKEN}")
+    REMOTE_ENV_VARS+=("GH_TOKEN=${GH_TOKEN}")
 fi
 if [ -n "${GITHUB_TOKEN:-}" ]; then
-    RUN_FLAGS+=(-e "GITHUB_TOKEN=${GITHUB_TOKEN}")
+    REMOTE_ENV_VARS+=("GITHUB_TOKEN=${GITHUB_TOKEN}")
 fi
 
 # Host-loopback reachability (for Hunk's daemon on the host).
@@ -318,7 +447,49 @@ gateway_flags=($(host_gateway_flags "${ENGINE}"))
 if [ "${#gateway_flags[@]}" -gt 0 ]; then
     RUN_FLAGS+=("${gateway_flags[@]}")
 fi
-RUN_FLAGS+=(-e "HUNK_HOST=$(host_loopback_hostname "${ENGINE}")")
+REMOTE_ENV_VARS+=("HUNK_HOST=$(host_loopback_hostname "${ENGINE}")")
 
-# --- Run ---------------------------------------------------------------
-exec "${ENGINE}" run "${RUN_FLAGS[@]}" "${IMAGE}" copilot "${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}"
+# --- Start the container detached, then connect in over SSH -------------
+"${ENGINE}" run "${RUN_FLAGS[@]}" "${IMAGE}" >/dev/null
+
+bridge_port="$(wait_for_published_port "${ENGINE}" "${CONTAINER_NAME}")"
+
+ssh_common_opts=(
+    -p "${bridge_port}"
+    -i "${BRIDGE_TMP}/id_ed25519"
+    -o IdentitiesOnly=yes
+    -o ConnectTimeout=5
+    -o StrictHostKeyChecking=no
+    -o UserKnownHostsFile=/dev/null
+    -o GlobalKnownHostsFile=/dev/null
+    -o LogLevel=ERROR
+)
+
+wait_for_ssh_ready "${ssh_common_opts[@]}"
+
+ssh_forward_flags=()
+if [ "${GPG_SIGN}" -eq 1 ]; then
+    ssh_forward_flags+=(-R "${BRIDGE_DIR}/S.gpg-agent:${gpg_socket}")
+fi
+if [ "${SSH_SIGN}" -eq 1 ]; then
+    ssh_forward_flags+=(-R "${BRIDGE_DIR}/ssh-agent.sock:${ssh_agent_sock_host}")
+fi
+
+# Build the remote command as a single already-quoted string: `ssh`
+# naively space-joins multiple trailing args without re-quoting, which
+# breaks on values containing spaces/metacharacters (e.g. GH_TOKEN), and
+# sshd's own SetEnv has its own parsing gotchas (e.g. with `#`). %q-quoting
+# every piece here and passing it as one argv element sidesteps both.
+remote_cmd="cd $(printf '%q' "${PRIMARY_CONTAINER_PATH}")"
+for kv in "${REMOTE_ENV_VARS[@]+"${REMOTE_ENV_VARS[@]}"}"; do
+    name="${kv%%=*}"
+    value="${kv#*=}"
+    remote_cmd+=" && export ${name}=$(printf '%q' "${value}")"
+done
+remote_cmd+=" && exec copilot"
+for arg in "${FORWARD_ARGS[@]+"${FORWARD_ARGS[@]}"}"; do
+    remote_cmd+=" $(printf '%q' "${arg}")"
+done
+
+ssh -t "${ssh_common_opts[@]}" "${ssh_forward_flags[@]}" \
+    copilot@127.0.0.1 -- "${remote_cmd}"
