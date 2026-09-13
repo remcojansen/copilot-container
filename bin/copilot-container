@@ -24,6 +24,8 @@
 #                            container's ~/.gitconfig (default: ~/.gitconfig).
 #                            Useful for switching between multiple gitconfig
 #                            profiles (e.g. ~/.gitconfig-work) per project.
+#   --gpg-sign               Enable GPG commit signing by forwarding host's
+#                            gpg-agent socket and mounting public keyrings.
 #   -h, --help               Show this help and exit
 #
 # At least one --mount is required.
@@ -110,6 +112,7 @@ host_loopback_hostname() {
 
 IMAGE="${COPILOT_CONTAINER_IMAGE:-copilot-container}"
 GITCONFIG_PATH="${HOME}/.gitconfig"
+GPG_SIGN=0
 MOUNT_ARGS=()
 FORWARD_ARGS=()
 
@@ -157,6 +160,10 @@ while [ $# -gt 0 ]; do
             GITCONFIG_PATH="$2"
             shift 2
             ;;
+        --gpg-sign)
+            GPG_SIGN=1
+            shift
+            ;;
         -h|--help)
             usage
             exit 0
@@ -182,6 +189,27 @@ fi
 if [ "${GITCONFIG_PATH}" != "${HOME}/.gitconfig" ] && [ ! -f "${GITCONFIG_PATH}" ]; then
     echo "error: --gitconfig file not found: ${GITCONFIG_PATH}" >&2
     exit 1
+fi
+
+# --- Validate GPG signing requirements -----------------------------------
+GPG_FLAGS=()
+if [ "${GPG_SIGN}" -eq 1 ]; then
+    gpg_socket="$(gpgconf --list-dirs agent-socket 2>/dev/null || echo "${HOME}/.gnupg/S.gpg-agent")"
+    if [ ! -S "${gpg_socket}" ]; then
+        echo "error: --gpg-sign requested, but GPG agent socket not found at: ${gpg_socket}" >&2
+        echo "hint: ensure gpg-agent is running on the host (e.g. gpgconf --launch gpg-agent)" >&2
+        exit 1
+    fi
+    GPG_FLAGS+=(-v "${gpg_socket}:/home/copilot/.gnupg/S.gpg-agent")
+    if [ -f "${HOME}/.gnupg/pubring.kbx" ]; then
+        GPG_FLAGS+=(-v "${HOME}/.gnupg/pubring.kbx:/home/copilot/.gnupg/pubring.kbx:ro")
+    fi
+    if [ -f "${HOME}/.gnupg/pubring.gpg" ]; then
+        GPG_FLAGS+=(-v "${HOME}/.gnupg/pubring.gpg:/home/copilot/.gnupg/pubring.gpg:ro")
+    fi
+    if [ -f "${HOME}/.gnupg/trustdb.gpg" ]; then
+        GPG_FLAGS+=(-v "${HOME}/.gnupg/trustdb.gpg:/home/copilot/.gnupg/trustdb.gpg:ro")
+    fi
 fi
 
 ENGINE="$(detect_engine)"
@@ -270,6 +298,7 @@ RUN_FLAGS=(
     -v "${VOLUME_NAME}:/home/copilot"
     "${GIT_FLAGS[@]}"
     "${COPILOT_FLAGS[@]}"
+    "${GPG_FLAGS[@]}"
     -e "HOST_UID=${HOST_UID}"
     -e "HOST_GID=${HOST_GID}"
     -e "PRIMARY_WORKSPACE=${PRIMARY_CONTAINER_PATH}"

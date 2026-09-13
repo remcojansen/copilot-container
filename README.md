@@ -83,6 +83,8 @@ copilot-container -m <path> [-m <path> ...] [options] [-- <copilot CLI args...>]
   -e, --engine <podman|docker>  Force a specific container engine
   -g, --gitconfig <path>        Host file to mount read-only as ~/.gitconfig
                                  (default: ~/.gitconfig)
+  --gpg-sign                    Enable GPG commit signing (forwards host gpg-agent socket
+                                 and mounts public keyrings read-only)
   -h, --help                    Show help
 ```
 
@@ -159,9 +161,19 @@ It's mounted **read-only**: changes made from inside the container (e.g.
 `git config --global ...`) do not persist back to the host file. Run those
 commands on the host instead.
 
-Not yet handled: commit signing (GPG/SSH). If your `~/.gitconfig` points at
-a signing key, signing will fail inside the container until that's
-designed — see [`ISSUES.md`](ISSUES.md).
+### GPG Commit Signing
+
+Pass `--gpg-sign` to forward your host's running `gpg-agent` socket into the
+container and mount your public keyrings (`pubring.kbx` / `pubring.gpg`)
+read-only. Your private key material remains strictly on the host.
+
+```sh
+copilot-container -m ~/code/my-project --gpg-sign
+```
+
+Ensure `gpg-agent` is active on your host before running. Because `~/.gitconfig`
+is mounted read-only, Git inside the container inherits your `user.signingKey`
+and `commit.gpgSign` configuration automatically.
 
 ## Hunk integration
 

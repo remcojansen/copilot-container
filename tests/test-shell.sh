@@ -20,13 +20,20 @@ pass() {
 assert_output_contains() {
     local expected="$1"
     shift
-    local output
-    if output="$("$@" 2>&1)"; then
+    local output status=0
+    output="$("$@" 2>&1)" || status=$?
+    if [ "${status}" -eq 0 ]; then
         fail "expected command to fail: $*"
     fi
     printf '%s\n' "${output}" | grep -Fq -- "${expected}" ||
         fail "expected output to contain: ${expected}"
 }
+
+PROJECT="${TEST_DIR}/project"
+mkdir -p "${PROJECT}" "${TEST_DIR}/home/.copilot"
+printf '%s\n' '[user]' > "${TEST_DIR}/home/.gitconfig"
+printf '%s\n' '{}' > "${TEST_DIR}/home/.copilot/config.json"
+printf '%s\n' 'instructions' > "${TEST_DIR}/home/.copilot/copilot-instructions.md"
 
 assert_output_contains "-m requires a value" "${LAUNCHER}" -m
 pass "missing option values are rejected"
@@ -35,11 +42,9 @@ assert_output_contains "--engine must be podman or docker" \
     "${LAUNCHER}" --engine invalid -m "${TEST_DIR}"
 pass "invalid engines are rejected"
 
-PROJECT="${TEST_DIR}/project"
-mkdir -p "${PROJECT}" "${TEST_DIR}/home/.copilot"
-printf '%s\n' '[user]' > "${TEST_DIR}/home/.gitconfig"
-printf '%s\n' '{}' > "${TEST_DIR}/home/.copilot/config.json"
-printf '%s\n' 'instructions' > "${TEST_DIR}/home/.copilot/copilot-instructions.md"
+assert_output_contains "GPG agent socket not found" \
+    env HOME="${TEST_DIR}/home" GNUPGHOME="${TEST_DIR}/home/.gnupg" "${LAUNCHER}" -m "${TEST_DIR}" --gpg-sign
+pass "--gpg-sign fails when GPG agent socket is missing"
 
 FAKE_BIN="${TEST_DIR}/bin"
 CAPTURE="${TEST_DIR}/run-args"
@@ -74,6 +79,26 @@ instructions_line="$(grep -nFx "${TEST_DIR}/home/.copilot/copilot-instructions.m
 [ "${home_volume_line}" -lt "${instructions_line}" ] ||
     fail "state volume must precede the instructions mount"
 pass "state volume precedes nested read-only mounts"
+
+# Test --gpg-sign with socket & pubring present
+mkdir -p "${TEST_DIR}/home/.gnupg"
+touch "${TEST_DIR}/home/.gnupg/pubring.kbx"
+FAKE_GPGCONF="${FAKE_BIN}/gpgconf"
+printf '%s\n' '#!/usr/bin/env bash' 'echo "'"${TEST_DIR}/home/.gnupg/S.gpg-agent"'"' > "${FAKE_GPGCONF}"
+chmod 755 "${FAKE_GPGCONF}"
+
+python3 -c "import socket; s = socket.socket(socket.AF_UNIX); s.bind('${TEST_DIR}/home/.gnupg/S.gpg-agent')"
+
+env HOME="${TEST_DIR}/home" GNUPGHOME="${TEST_DIR}/home/.gnupg" CAPTURE="${CAPTURE}" PATH="${FAKE_BIN}:${PATH}" \
+    "${LAUNCHER}" -m "${PROJECT}" --gpg-sign >/dev/null
+
+gpg_socket_line="$(grep -nFx "${TEST_DIR}/home/.gnupg/S.gpg-agent:/home/copilot/.gnupg/S.gpg-agent" "${CAPTURE}" | cut -d: -f1)"
+gpg_kbx_line="$(grep -nFx "${TEST_DIR}/home/.gnupg/pubring.kbx:/home/copilot/.gnupg/pubring.kbx:ro" "${CAPTURE}" | cut -d: -f1)"
+
+[ -n "${gpg_socket_line}" ] || fail "--gpg-sign did not mount agent socket"
+[ -n "${gpg_kbx_line}" ] || fail "--gpg-sign did not mount pubring.kbx"
+[ "${home_volume_line}" -lt "${gpg_socket_line}" ] || fail "state volume must precede gpg socket mount"
+pass "--gpg-sign mounts agent socket and public keyrings"
 
 assert_output_contains "HOST_UID must be a numeric user ID" \
     env HOST_UID=invalid bash "${ENTRYPOINT}"

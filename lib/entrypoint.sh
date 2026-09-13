@@ -49,12 +49,14 @@ else
     fi
 fi
 
-# Read-only config files are mounted under the home directory and cannot be
+# Read-only config files and mounted sockets under the home directory cannot be
 # chowned. Exclude those paths while aligning the writable state volume.
 find "${RUNTIME_HOME}" -xdev \
     ! -path "${RUNTIME_HOME}/.gitconfig" \
     ! -path "${RUNTIME_HOME}/.copilot/config.json" \
     ! -path "${RUNTIME_HOME}/.copilot/copilot-instructions.md" \
+    ! -path "${RUNTIME_HOME}/.gnupg*" \
+    ! -path "${RUNTIME_HOME}/.gnupg/*" \
     -exec chown "${HOST_UID}:${HOST_GID}" {} +
 
 # --- cd into the primary project and exec as the runtime user -----------

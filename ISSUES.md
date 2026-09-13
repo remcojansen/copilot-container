@@ -14,22 +14,10 @@ of scattered across other docs.
 
 ## Not designed yet
 
-- **Commit signing (GPG/SSH).** `~/.gitconfig` is read-only bind-mounted,
-  so identity/aliases/etc. work, but signing key material isn't handled.
-  Open questions:
-  - GPG signing: mount the host's GPG agent socket vs. importing a key into
-    the container.
-  - SSH signing (`gpg.format=ssh`): mount the host's `SSH_AUTH_SOCK` so
-    signing happens via the host's agent, key material never entering the
-    container.
-  - Per-project (state volume) vs. global (mounted read-only every run)?
-  - Cross-platform differences: agent socket forwarding works differently
-    on macOS (Docker Desktop/Podman machine run in a VM, host socket needs
-    proxying) vs. native Linux (direct socket bind-mount works).
+- **SSH Commit Signing.** GPG commit signing is implemented via `--gpg-sign`
+  (forwards host `gpg-agent` socket and read-only public keyrings). SSH signing
+  (`gpg.format=ssh` / `--ssh-sign`) forwarding host `SSH_AUTH_SOCK` is planned.
 
 ## Not planned
 
-- **No automated tests.** Verification has been manual smoke-testing only
-  (build the image, run the launcher, check tool versions/mounts/seeding
-  behavior by hand).
 - **Windows is not a supported host platform.**
