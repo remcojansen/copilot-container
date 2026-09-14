@@ -118,4 +118,4 @@ chmod 0600 "${RUNTIME_HOME}/.copilot-container-bridge/gpg.conf"
 ssh-keygen -q -t ed25519 -N "" -f /etc/ssh/copilot_container_host_key <<< y >/dev/null
 mkdir -p /run/sshd
 chmod 0755 /run/sshd
-exec /usr/sbin/sshd -D
+exec /usr/sbin/sshd -D -e
