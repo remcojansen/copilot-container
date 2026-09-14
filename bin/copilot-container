@@ -1,20 +1,14 @@
 #!/usr/bin/env bash
 #
-# copilot-container - launch GitHub Copilot CLI in a container with sensible
-# defaults: host-identical bind mounts, a per-project persistent state
-# volume, GH token passthrough, and host-loopback reachability for Hunk.
+# copilot-container - smoothly run copilot in a container with personal,
+# cross-project preferences.
 #
-# The container always starts detached; this launcher then connects in
-# over a narrowly-scoped SSH session (loopback-only, single-use key,
-# always torn down with the container) to actually run the `copilot` CLI
-# as the aligned runtime user. This is not just for --gpg-sign/--ssh-sign:
-# a bind-mounted socket doesn't carry live connect() semantics under
-# virtiofs (Podman machine / Docker Desktop on macOS), so those flags rely
-# on it too, but running the same path unconditionally is simpler than
-# branching the whole launch flow on whether signing was requested.
+# Launches the GitHub Copilot CLI inside a container with the configured
+# environment and mounts, per-project persistent state, SSH/GPG agent
+# forwarding and host-loopback reachability for Hunk.
 #
 # Usage:
-#   copilot-container -m <path> [-m <path> ...] [options] [-- <copilot CLI args...>]
+#   copilot-container [-m <path> ...] [options] [-- <copilot CLI args...>]
 #
 # Options:
 #   -m, --mount <host_path>[:<container_path>]
@@ -122,27 +116,12 @@ host_loopback_hostname() {
 
 # generate_bridge_credentials: creates an ephemeral keypair + authorized_keys
 # for this run's SSH login, in BRIDGE_TMP (caller creates/removes it via the
-# EXIT trap). Both agent-socket forwards are always permitted regardless of
-# --gpg-sign/--ssh-sign: harmless when unused, and keeping this unconditional
-# avoids yet another branch in an already-branchy launcher.
+# EXIT trap).
 generate_bridge_credentials() {
     ssh-keygen -q -t ed25519 -N "" -f "${BRIDGE_TMP}/id_ed25519"
 
-    # No pty/shell beyond the one remote command ssh is told to run. Unix
-    # socket forwards aren't further restricted by path here: sshd's
-    # authorized_keys `permitlisten` option only accepts `[host:]port`
-    # syntax, not socket paths (unlike `permitopen`, which does support a
-    # `path` form) — a `permitlisten="<path>"` entry makes sshd reject the
-    # whole authorized_keys line as malformed, locking out every key.
-    # Scoping is instead handled by sshd-config (AllowStreamLocalForwarding
-    # limits forwards to unix sockets) plus this being a single-use key for
-    # a single narrow session.
+    # No pty/shell beyond the one remote command ssh is told to run.
     authorized_key_opts="no-x11-forwarding,no-user-rc"
-
-    # Passed as an env var (base64, single line) rather than bind-mounted:
-    # a freshly created host file can hit a stale virtiofs "not found"
-    # cache on Podman machine when mounted moments after creation, so the
-    # entrypoint writes it into place from the env var instead.
     AUTHORIZED_KEYS_B64="$(printf '%s %s\n' "${authorized_key_opts}" \
         "$(cat "${BRIDGE_TMP}/id_ed25519.pub")" | base64 | tr -d '\n')"
 }
@@ -167,12 +146,8 @@ wait_for_published_port() {
 }
 
 # wait_for_ssh_ready <ssh_opts...>: retries a lightweight non-interactive
-# connection until the container's sshd actually accepts the key, so the
-# real interactive session below isn't the first thing to discover
-# "container not ready yet" and doesn't confuse that with a genuine
-# forwarding/auth failure. On timeout, surfaces the last attempt's stderr
-# so a genuine misconfiguration (e.g. broken authorized_keys) doesn't just
-# look like "container was slow to start".
+# connection until the container's sshd actually accepts the key and
+# on timeout, surfaces the last attempt's stderr.
 wait_for_ssh_ready() {
     local last_err=""
     for _ in $(seq 1 "${COPILOT_CONTAINER_POLL_ATTEMPTS}"); do
@@ -197,12 +172,11 @@ MOUNT_ARGS=()
 FORWARD_ARGS=()
 
 # How many 0.2s polling attempts (~150 => 30s) to wait for the container's
-# port to be published / its sshd to accept a connection. Overridable
-# mainly so tests can shorten a deliberately-failing wait.
+# port to be published / its sshd to accept a connection.
 COPILOT_CONTAINER_POLL_ATTEMPTS="${COPILOT_CONTAINER_POLL_ATTEMPTS:-150}"
 
 usage() {
-    sed -n '2,52p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 require_option_value() {
@@ -279,9 +253,7 @@ if [ "${GITCONFIG_PATH}" != "${HOME}/.gitconfig" ] && [ ! -f "${GITCONFIG_PATH}"
 fi
 
 # --- Validate GPG/SSH signing requirements -------------------------------
-# Both --gpg-sign and --ssh-sign forward a live host socket in over the
-# SSH session this launcher always establishes (see below); a bind-mounted
-# socket wouldn't carry live connect() semantics under virtiofs.
+# Both --gpg-sign and --ssh-sign forward a host socket over the SSH session
 BRIDGE_DIR="/home/copilot/.copilot-container-bridge"
 
 GPG_FLAGS=()
@@ -374,8 +346,7 @@ HOST_GID="$(id -g)"
 
 # --- Host git configuration --------------------------------------------
 # Mounted read-only: the container can read your identity/aliases, but
-# changes made inside the container (e.g. `git config --global ...`) do
-# not write back to the host file.
+# changes made inside the container do not write back to the host file.
 GIT_FLAGS=()
 if [ -f "${GITCONFIG_PATH}" ]; then
     GIT_FLAGS+=(-v "${GITCONFIG_PATH}:/home/copilot/.gitconfig:ro")
@@ -426,8 +397,7 @@ RUN_FLAGS=(
 )
 
 # GH token passthrough (never persisted, only forwarded if present on host).
-# Falls back to `gh auth token` when GH_TOKEN isn't already set, so hosts
-# authenticated via `gh auth login` work without exporting anything.
+# Falls back to `gh auth token` when GH_TOKEN isn't already set.
 # Passed to the remote `copilot` invocation itself (see below), not as
 # container -e flags: sshd doesn't inherit its own daemon environment into
 # spawned login sessions.

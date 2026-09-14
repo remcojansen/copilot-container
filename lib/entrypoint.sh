@@ -8,9 +8,7 @@
 #     root-owned on the host.
 #   - Install the launcher-supplied SSH key for that user and start sshd
 #     as the container's foreground process. The host launcher always
-#     connects in over SSH (see bin/copilot-container) to run the actual
-#     Copilot CLI command as this same user — there's no other entry
-#     point into this container.
+#     connects in over SSH to run the actual Copilot CLI command.
 set -euo pipefail
 
 RUNTIME_USER="copilot"
@@ -58,22 +56,16 @@ else
     fi
 fi
 
-# useradd/usermod leave the password field locked ("!"), which sshd's
-# portable auth code (allowed_user() in auth.c) rejects outright for any
-# authentication method, not just password auth — even with UsePAM no and
-# PasswordAuthentication no. Only pubkey login is ever possible here (no
-# password is ever set), so just clear the lock; this doesn't grant
-# password login on its own.
+# useradd/usermod leave the password field locked ("!"), which sshd rejects
+# outright for any authentication method.
+# Only pubkey login is ever possible here (no password is ever set), 
+# so just clear the lock; this doesn't grant password login on its own.
 usermod -p '*' "${RUNTIME_USER}"
 
 # --- Seed the writable Copilot config from the read-only host mount -----
-# config.json is bind-mounted read-only at .copilot-config-seed.json (see
-# bin/copilot-container) rather than directly at its final path, so that
-# writes the CLI makes to it (e.g. remembered directory-trust approvals)
-# can actually persist. On first run for this project's volume, seed a
-# writable copy into place; later runs reuse whatever is already in the
-# volume (host-side edits to config.json won't retroactively overwrite it,
-# matching how the rest of ~/.copilot behaves).
+# config.json is bind-mounted read-only at .copilot-config-seed.json
+# rather than directly at its final path. Seed a writable copy into place on
+# first run; later runs reuse what is already in the volume.
 CONFIG_SEED="${RUNTIME_HOME}/.copilot-config-seed.json"
 if [ -f "${CONFIG_SEED}" ] && [ ! -f "${RUNTIME_HOME}/.copilot/config.json" ]; then
     mkdir -p "${RUNTIME_HOME}/.copilot"
@@ -98,19 +90,11 @@ find "${RUNTIME_HOME}" -xdev \
 
 # --- SSH login for the host launcher -------------------------------------
 # The host launcher always starts this container detached and connects in
-# over SSH as this same runtime user to run the actual Copilot CLI command
-# (see bin/copilot-container) — there's no other entry point. When
-# --gpg-sign/--ssh-sign was requested, that same connection also carries
-# gpg-agent/ssh-agent socket forwards.
+# over SSH as this same runtime user to run the actual Copilot CLI command.
 if [ -z "${AUTHORIZED_KEYS_B64:-}" ]; then
     echo "error: AUTHORIZED_KEYS_B64 is not set (expected to be supplied by the launcher)" >&2
     exit 1
 fi
-
-# Passed as base64 in an env var rather than bind-mounted: a freshly
-# created host file can hit a stale virtiofs "not found" cache on Podman
-# machine when mounted moments after creation, so we avoid depending on
-# host->VM file sync altogether here.
 mkdir -p "${RUNTIME_HOME}/.ssh"
 base64 -d <<< "${AUTHORIZED_KEYS_B64}" > "${RUNTIME_HOME}/.ssh/authorized_keys"
 chmod 0700 "${RUNTIME_HOME}/.ssh"
@@ -118,10 +102,7 @@ chmod 0600 "${RUNTIME_HOME}/.ssh/authorized_keys"
 chown -R "${HOST_UID}:${HOST_GID}" "${RUNTIME_HOME}/.ssh"
 unset AUTHORIZED_KEYS_B64
 
-# Shared directory for forwarded gpg-agent/ssh-agent sockets (and, for
-# GPG, the read-only public keyrings the launcher bind-mounts alongside
-# them). Always created — harmless when this run doesn't actually forward
-# anything into it.
+# Shared directory for forwarded gpg-agent/ssh-agent sockets
 mkdir -p "${RUNTIME_HOME}/.copilot-container-bridge"
 chown "${HOST_UID}:${HOST_GID}" "${RUNTIME_HOME}/.copilot-container-bridge"
 chmod 0700 "${RUNTIME_HOME}/.copilot-container-bridge"

@@ -1,9 +1,9 @@
 # copilot-container
 
 Run [GitHub Copilot CLI](https://github.com/github/copilot-cli) inside a
-container, smoothly. This project provides a prebuilt container image with
-Copilot CLI and a common dev toolchain, a launcher script that mounts your
-project(s) and forwards your preferred Copilot CLI flags, container-tuned
+container, smoothly. This project provides a container image with Copilot
+CLI and a common dev toolchain, a launcher script that mounts your project(s)
+and forwards your preferred Copilot CLI flags, container-tuned
 Copilot defaults, personal user-level Copilot instructions, and integration
 with [Hunk](https://hunk.dev/) (a host-side terminal diff reviewer).
 
@@ -16,6 +16,7 @@ with [Hunk](https://hunk.dev/) (a host-side terminal diff reviewer).
   persisted to disk or baked into the image
 - (Optional) [Hunk](https://hunk.dev/) installed on the host if you want
   agent-driven diff review
+- OpenSSH client for the launcher to shell into the container image.
 
 ## Quickstart
 
@@ -26,7 +27,7 @@ make install                                 # copies bin/copilot-container to /
 
 # Run it against the current directory
 cd /path/to/your/project
-copilot-container -m "$(pwd)" -- --model claude-sonnet-4.5
+copilot-container -- --model claude-sonnet-5
 ```
 
 Everything after `--` is forwarded verbatim to the `copilot` CLI inside the
@@ -51,25 +52,24 @@ build`.
    `host:container` mapping). The *first* `--mount` is the primary project:
    the container's working directory, and the source for the per-project
    state volume name.
-3. Creates/reuses a per-project named volume (derived from the primary
-   project's absolute path), mounted at the container user's home
-   directory, so Copilot CLI config, permission approvals, and
-   session/history state persist per project without mixing between
-   projects.
+3. Creates/reuses a per-project named volume (derived from the first mount
+   path), mounted at the container user's home directory, so Copilot CLI 
+   config, permission approvals, and session/history state persist per project.
 4. If `~/.gitconfig` exists on the host, bind-mounts it read-only into the
    container (see [Git configuration](#git-configuration) below).
-5. If `~/.copilot/config.json` and/or `~/.copilot/copilot-instructions.md`
-   exist on the host, bind-mounts them read-only into the container (see
-   [Copilot config and instructions](#copilot-config-and-instructions)
+5. If `~/.copilot/config.json` exists on the host, seeds the config into the
+   container on the first run for a given project.
+6. If `~/.copilot/copilot-instructions.md` exists on the host, bind-mounts it
+   read-only into the container (see [Copilot config and instructions](#copilot-config-and-instructions)
    below).
-6. Passes `GH_TOKEN`/`GITHUB_TOKEN` from your host shell into the remote
+7. Passes `GH_TOKEN`/`GITHUB_TOKEN` from your host shell into the remote
    `copilot` invocation for that run only (nothing is written to the image
    or the persistent volume). Falls back to `gh auth token` if `GH_TOKEN`
    is unset but `gh` is authenticated.
-7. Adds the host-loopback route (`--add-host`) so tools inside the container
+8. Adds the host-loopback route (`--add-host`) so tools inside the container
    can reach services bound to the host's loopback interface — this is what
    makes the [Hunk integration](#hunk-integration) work.
-8. Starts the container **detached**, then connects in over a narrowly-scoped,
+9. Starts the container **detached**, then connects in over a narrowly-scoped,
    loopback-only SSH session (fresh single-use keypair, torn down with the
    container) to run `copilot` as the aligned runtime user, forwarding any
    args you passed after `--`. See [Architecture](#architecture) below for
@@ -78,7 +78,7 @@ build`.
 ### Options
 
 ```
-copilot-container -m <path> [-m <path> ...] [options] [-- <copilot CLI args...>]
+copilot-container [-m <path> ...] [options] [-- <copilot CLI args...>]
 
   -m, --mount <host_path>[:<container_path>]
                                  Bind-mount a host directory (repeatable).
@@ -98,15 +98,22 @@ copilot-container -m <path> [-m <path> ...] [options] [-- <copilot CLI args...>]
   -h, --help                    Show help
 ```
 
-Example with multiple mounted projects (e.g. a main repo plus a reference repo):
+Example with multiple mounted projects, custom gitconfig, GPG signing and additional copilot flags:
 
 ```sh
-copilot-container -m ~/code/my-app -m ~/code/shared-lib -- --model claude-sonnet-4.5
+copilot-container \
+  -m /path/to/your/first-project \
+  -m /path/to/your/second-project \
+  --gpg-sign \
+  --gitconfig ~/.gitconfig-default \
+  -- \
+  --model claude-sonnet-5 \
+  --allow-all-tools \
+  --allow-all-paths
 ```
 
-`~/code/my-app` is the primary project (container's working directory, and
-the one used to name the persistent state volume); `~/code/shared-lib` is
-mounted alongside it at the same path.
+`/path/to/your/first-project` is the primary project (container's working directory, and
+the one used to name the persistent state volume).
 
 Environment variables:
 
@@ -115,24 +122,6 @@ Environment variables:
 | `GH_TOKEN` / `GITHUB_TOKEN` | Forwarded into the container for the run (falls back to `gh auth token` if unset) |
 | `COPILOT_CONTAINER_ENGINE` | Force `podman` or `docker` |
 | `COPILOT_CONTAINER_IMAGE`  | Default image name/tag to run |
-
-## Architecture
-
-The container always starts **detached** (`run -d`); the launcher then
-connects in over a single SSH session as the aligned runtime user (`copilot`)
-to run the `copilot` CLI — there's no `run -it` attach path. This applies to
-every invocation, not just `--gpg-sign`/`--ssh-sign`: a bind-mounted socket
-doesn't carry live `connect()` semantics under virtiofs (Podman machine /
-Docker Desktop on macOS), so those flags need a real connection anyway, and
-one code path is simpler than branching the launch flow on whether signing
-was requested.
-
-Each run generates a fresh, single-use ed25519 keypair and `authorized_keys`
-entry (loopback-only, published on an ephemeral port, key-only auth,
-`no-x11-forwarding`), passed to the container via an environment variable
-(not bind-mounted, to avoid virtiofs staleness on freshly created files).
-The launcher waits for the container's sshd to come up, connects in, and
-tears everything down (container + temporary keypair) when the session ends.
 
 ## Engine selection
 
@@ -161,10 +150,7 @@ too (no fallback).
 
 `copilot-instructions.md` is bind-mounted read-only at the same relative
 path — it's not written to by the CLI, so edit it on the host if you want
-to change it. It's Copilot CLI's **user-level instructions file** (applies
-across all repositories you use inside the container) — it is never copied
-into a project's workspace, so it never conflicts with or overrides a
-project's own `AGENTS.md` / `.github/copilot-instructions.md`.
+to change it.
 
 `config.json` is different: the CLI writes to it at runtime (e.g. to
 remember per-directory trust approvals), so it can't simply be bind-mounted
@@ -209,10 +195,6 @@ copilot-container -m ~/code/my-project --gpg-sign
 copilot-container -m ~/code/my-project --ssh-sign
 ```
 
-Only unix-domain socket forwards are permitted at all (`AllowStreamLocalForwarding
-remote`, no TCP/X11/native agent forwarding); the session's key is single-use
-and torn down with the container, so nothing else is reachable through it.
-
 Ensure `gpg-agent`/`ssh-agent` is active on your host before running. Because
 `~/.gitconfig` is mounted read-only, Git inside the container inherits your
 `user.signingKey`/`gpg.format` and `commit.gpgSign` configuration
@@ -220,7 +202,7 @@ automatically.
 
 ## Hunk integration
 
-[Hunk](https://hunk.dev/) is a terminal diff reviewer. Its TUI **always runs
+[Hunk](https://hunk.dev/) is a terminal diff reviewer. Its TUI **is expected to run
 on the host** — it registers with a local loopback daemon that the `hunk`
 CLI talks to. The container only needs the `hunk` CLI **client** (already
 installed in the image) plus network reachability to that host daemon,
@@ -291,5 +273,15 @@ base OS.
 
 ## Known limitations / not yet implemented
 
-See [`ISSUES.md`](ISSUES.md) for the current list of untested, undesigned,
-and out-of-scope items.
+Untested:
+
+- **Docker.** Everything has only been built/run with Podman on macOS/arm64
+  so far. Docker should work, but has not been tested.
+- **Hunk host-loopback reachability.** The `--add-host`/`HUNK_HOST` flags
+  are wired up, but never verified end-to-end against a real, running Hunk
+  daemon session on the host.
+- **Linux.** So far the tool has only been tested on macOS.
+
+Not planned:
+
+- **Windows is not a supported host platform.**
