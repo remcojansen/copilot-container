@@ -288,11 +288,7 @@ base OS.
 
 Untested:
 
-- **Docker.** Everything has only been built/run with Podman on macOS/arm64
-  so far. Docker should work, but has not been tested.
-- **Hunk agent forwarding.** `--hunk-agent` is wired up, but has not yet been
-  verified end-to-end against a real, running Hunk daemon session on the host.
-- **Linux.** So far the tool has only been tested on macOS.
+- **Docker / Linux.** Everything has been built/run with Podman on macOS/arm64 so far. 
 
 Not planned:
 
