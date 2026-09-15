@@ -29,13 +29,10 @@ MaxAuthTries 2
 MaxSessions 2
 LoginGraceTime 10
 
-# Only unix-domain socket forwards are ever used (gpg-agent/ssh-agent);
-# no X11 or native agent forwarding is needed. AllowTcpForwarding must stay
-# at least `remote` (not `no`): sshd's remote streamlocal-forward permission
-# check is gated on it too, so `no` silently refuses unix-socket forwards as
-# well even with AllowStreamLocalForwarding yes. `remote` still blocks local
-# (-L) forwards, GatewayPorts stays no, and the launcher never requests an
-# actual TCP listener.
+# Remote forwarding carries gpg-agent/ssh-agent Unix sockets and, when
+# requested, a loopback-only TCP tunnel to Hunk's host daemon. Local (-L)
+# forwarding remains disabled, and GatewayPorts prevents remote listeners
+# from being exposed beyond the container's loopback interface.
 AllowTcpForwarding remote
 AllowStreamLocalForwarding yes
 AllowAgentForwarding no

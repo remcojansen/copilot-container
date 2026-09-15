@@ -4,8 +4,8 @@
 # cross-project preferences.
 #
 # Launches the GitHub Copilot CLI inside a container with the configured
-# environment and mounts, per-project persistent state, SSH/GPG agent
-# forwarding and host-loopback reachability for Hunk.
+# environment and mounts, per-project persistent state, and SSH-based
+# forwarding for SSH/GPG agents and Hunk.
 #
 # Usage:
 #   copilot-container [-m <path> ...] [options] [-- <copilot CLI args...>]
@@ -33,6 +33,8 @@
 #                            keyrings for GPG commit signing.
 #   --ssh-agent              Forward host's SSH_AUTH_SOCK (ssh-agent) for SSH
 #                            public-key auth and SSH commit signing.
+#   --hunk-agent             Enable agent access to host Hunk live sessions by
+#                            forwarding Hunk's broker host/runtime state.
 #   -h, --help               Show this help and exit
 #
 # Any arguments after `--` are forwarded verbatim to the `copilot` CLI
@@ -42,12 +44,13 @@
 #   GH_TOKEN / GITHUB_TOKEN   Passed into the container if set on the host.
 #                             GH_TOKEN falls back to `gh auth token` when
 #                             unset and `gh` is available.
+#   HUNK_MCP_PORT             Passed into the container with --hunk-agent if set.
 #   COPILOT_CONTAINER_ENGINE  Force engine selection (podman|docker).
 #   COPILOT_CONTAINER_IMAGE   Default image name/tag to run.
 
 set -euo pipefail
 
-# --- Container engine detection & host-loopback helpers -------------------
+# --- Container engine detection -------------------------------------------
 # Podman is preferred over Docker; override with COPILOT_CONTAINER_ENGINE.
 
 detect_engine() {
@@ -72,46 +75,6 @@ detect_engine() {
 
     echo "error: neither podman nor docker was found on PATH" >&2
     return 1
-}
-
-# host_gateway_flags <engine>: prints extra `run` flags (word-split by the
-# caller) needed so the container can reach services bound to the host's
-# loopback interface (e.g. Hunk's daemon).
-host_gateway_flags() {
-    engine="$1"
-    os="$(uname -s)"
-
-    case "${engine}" in
-        docker)
-            # Docker Desktop (mac) resolves host.docker.internal natively.
-            # Linux Docker needs the explicit host-gateway mapping.
-            if [ "${os}" = "Linux" ]; then
-                echo "--add-host=host.docker.internal:host-gateway"
-            else
-                echo ""
-            fi
-            ;;
-        podman)
-            # Podman >= 4 provides host.containers.internal automatically;
-            # add the host-gateway mapping too as a fallback for older
-            # versions / rootless network setups.
-            echo "--add-host=host.containers.internal:host-gateway"
-            ;;
-        *)
-            echo ""
-            ;;
-    esac
-}
-
-# host_loopback_hostname <engine>: prints the hostname the container should
-# use to reach the host's loopback-bound services (e.g. Hunk's daemon).
-host_loopback_hostname() {
-    engine="$1"
-    case "${engine}" in
-        docker) echo "host.docker.internal" ;;
-        podman) echo "host.containers.internal" ;;
-        *) echo "host.docker.internal" ;;
-    esac
 }
 
 # generate_bridge_credentials: creates an ephemeral keypair + authorized_keys
@@ -168,6 +131,7 @@ IMAGE="${COPILOT_CONTAINER_IMAGE:-copilot-container}"
 GITCONFIG_PATH="${HOME}/.gitconfig"
 GPG_AGENT=0
 SSH_AGENT=0
+HUNK_AGENT=0
 MOUNT_ARGS=()
 FORWARD_ARGS=()
 
@@ -176,7 +140,7 @@ FORWARD_ARGS=()
 COPILOT_CONTAINER_POLL_ATTEMPTS="${COPILOT_CONTAINER_POLL_ATTEMPTS:-150}"
 
 usage() {
-    sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,49p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 require_option_value() {
@@ -225,6 +189,10 @@ while [ $# -gt 0 ]; do
             ;;
         --ssh-agent)
             SSH_AGENT=1
+            shift
+            ;;
+        --hunk-agent)
+            HUNK_AGENT=1
             shift
             ;;
         -h|--help)
@@ -294,6 +262,36 @@ if [ "${SSH_AGENT}" -eq 1 ]; then
 fi
 
 ENGINE="$(detect_engine)"
+
+# --- Hunk live-session forwarding ---------------------------------------
+HUNK_FLAGS=()
+if [ "${HUNK_AGENT}" -eq 1 ]; then
+    hunk_runtime_dir=""
+    if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "${XDG_RUNTIME_DIR}/hunk-mcp" ]; then
+        hunk_runtime_dir="${XDG_RUNTIME_DIR}/hunk-mcp"
+    elif [ -d "${HOME}/.hunk/hunk-mcp" ]; then
+        hunk_runtime_dir="${HOME}/.hunk/hunk-mcp"
+    else
+        echo "error: --hunk-agent requested, but no host Hunk runtime state was found" >&2
+        echo "hint: start Hunk on the host first, then retry" >&2
+        exit 1
+    fi
+    HUNK_FLAGS+=(-v "${hunk_runtime_dir}:/home/copilot/.hunk/hunk-mcp:ro")
+    hunk_broker_port="${HUNK_MCP_PORT:-47657}"
+    case "${hunk_broker_port}" in
+        ''|*[!0-9]*)
+            echo "error: HUNK_MCP_PORT must be a numeric TCP port" >&2
+            exit 1
+            ;;
+    esac
+    if [ "${hunk_broker_port}" -lt 1 ] || [ "${hunk_broker_port}" -gt 65535 ]; then
+        echo "error: HUNK_MCP_PORT must be between 1 and 65535" >&2
+        exit 1
+    fi
+    REMOTE_ENV_VARS+=("XDG_RUNTIME_DIR=/home/copilot/.hunk")
+    REMOTE_ENV_VARS+=("HUNK_MCP_HOST=127.0.0.1")
+    REMOTE_ENV_VARS+=("HUNK_MCP_PORT=${hunk_broker_port}")
+fi
 
 # --- Resolve mounts, preserving host paths inside the container ----------
 BIND_FLAGS=()
@@ -396,6 +394,7 @@ RUN_FLAGS=(
     "${COPILOT_FLAGS[@]}"
     "${GPG_FLAGS[@]}"
     "${SSH_FLAGS[@]}"
+    "${HUNK_FLAGS[@]}"
     -e "HOST_UID=${HOST_UID}"
     -e "HOST_GID=${HOST_GID}"
     -e "AUTHORIZED_KEYS_B64=${AUTHORIZED_KEYS_B64}"
@@ -415,14 +414,6 @@ fi
 if [ -n "${GITHUB_TOKEN:-}" ]; then
     REMOTE_ENV_VARS+=("GITHUB_TOKEN=${GITHUB_TOKEN}")
 fi
-
-# Host-loopback reachability (for Hunk's daemon on the host).
-# shellcheck disable=SC2207
-gateway_flags=($(host_gateway_flags "${ENGINE}"))
-if [ "${#gateway_flags[@]}" -gt 0 ]; then
-    RUN_FLAGS+=("${gateway_flags[@]}")
-fi
-REMOTE_ENV_VARS+=("HUNK_HOST=$(host_loopback_hostname "${ENGINE}")")
 
 # --- Start the container detached, then connect in over SSH -------------
 "${ENGINE}" run "${RUN_FLAGS[@]}" "${IMAGE}" >/dev/null
@@ -448,6 +439,12 @@ if [ "${GPG_AGENT}" -eq 1 ]; then
 fi
 if [ "${SSH_AGENT}" -eq 1 ]; then
     ssh_forward_flags+=(-R "${BRIDGE_DIR}/ssh-agent.sock:${ssh_agent_sock_host}")
+fi
+if [ "${HUNK_AGENT}" -eq 1 ]; then
+    ssh_forward_flags+=(
+        -o ExitOnForwardFailure=yes
+        -R "127.0.0.1:${hunk_broker_port}:127.0.0.1:${hunk_broker_port}"
+    )
 fi
 
 # Build the remote command as a single already-quoted string: `ssh`

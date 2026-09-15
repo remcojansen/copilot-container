@@ -66,9 +66,9 @@ build`.
    `copilot` invocation for that run only (nothing is written to the image
    or the persistent volume). Falls back to `gh auth token` if `GH_TOKEN`
    is unset but `gh` is authenticated.
-8. Adds the host-loopback route (`--add-host`) so tools inside the container
-   can reach services bound to the host's loopback interface — this is what
-   makes the [Hunk integration](#hunk-integration) work.
+8. With `--hunk-agent`, mounts Hunk's host runtime state read-only and
+   forwards its loopback-only broker over SSH so tools inside the container
+   can control host-side Hunk sessions.
 9. Starts the container **detached**, then connects in over a narrowly-scoped,
    loopback-only SSH session (fresh single-use keypair, torn down with the
    container) to run `copilot` as the aligned runtime user, forwarding any
@@ -95,6 +95,7 @@ copilot-container [-m <path> ...] [options] [-- <copilot CLI args...>]
                                  read-only for GPG commit signing
   --ssh-agent                   Forward host SSH_AUTH_SOCK (ssh-agent) for SSH public-key
                                  auth and SSH commit signing
+  --hunk-agent                  Enable agent access to host Hunk live sessions
   -h, --help                    Show help
 ```
 
@@ -120,6 +121,7 @@ Environment variables:
 | Variable | Purpose |
 |---|---|
 | `GH_TOKEN` / `GITHUB_TOKEN` | Forwarded into the container for the run (falls back to `gh auth token` if unset) |
+| `HUNK_MCP_PORT` | Forwarded into the container with `--hunk-agent` if set |
 | `COPILOT_CONTAINER_ENGINE` | Force `podman` or `docker` |
 | `COPILOT_CONTAINER_IMAGE`  | Default image name/tag to run |
 
@@ -127,13 +129,6 @@ Environment variables:
 
 Podman is preferred; Docker is used automatically if Podman isn't on your
 `PATH`. Override explicitly with `-e/--engine` or `COPILOT_CONTAINER_ENGINE`.
-
-Host-loopback reachability (needed for Hunk) is handled per engine:
-
-- **Docker Desktop (macOS)**: `host.docker.internal` resolves natively.
-- **Docker on Linux**: an explicit `--add-host=host.docker.internal:host-gateway` is added.
-- **Podman (macOS & Linux)**: `host.containers.internal` plus a
-  `host-gateway` fallback mapping for older Podman versions.
 
 ## Copilot config and instructions
 
@@ -210,21 +205,33 @@ the forwarded agent without a separate host-key prompt inside the container.
 on the host** — it registers with a local loopback daemon that the `hunk`
 CLI talks to. The container only needs the `hunk` CLI **client** (already
 installed in the image) plus network reachability to that host daemon,
-which the launcher sets up automatically.
+which the launcher sets up when `--hunk-agent` is enabled.
+This integration is opt-in: run the launcher with `--hunk-agent` when you want
+Copilot to inspect, navigate, or comment on a live host-side Hunk session.
 
 To use it:
 
 1. On the host, open a review: `hunk diff` (or `hunk show`, etc.) from the
    same repo root you're mounting into the container via `--mount`.
-2. Inside the container, verify the agent can see the live session, using
+2. Start Copilot with `--hunk-agent`:
+   `copilot-container -m /path/to/repo --hunk-agent`.
+3. Inside the container, verify the agent can see the live session, using
    the same path you mounted: `hunk session list --repo <path>`.
-3. Ask Copilot to load the Hunk review skill (`hunk skill path`) and use
+4. Ask Copilot to load the Hunk review skill (`hunk skill path`) and use
    `hunk session ...` commands to navigate/comment as described in
    [Hunk's agent workflow docs](https://github.com/modem-dev/hunk/blob/main/docs/agent-workflows.md).
 
 Because `--mount` preserves the host's absolute path inside the container,
 matching by repo root is predictable as long as you run Hunk on the host
 against the exact directory you passed to `--mount`.
+
+`--hunk-agent` forwards Hunk's host broker port to the same loopback port
+inside the container over the launcher's SSH connection. The Hunk CLI
+therefore connects to `127.0.0.1` and retains the broker's loopback-only
+security checks. `HUNK_MCP_PORT` selects a non-default broker port when set.
+The launcher also mounts the host broker runtime state read-only from
+`$XDG_RUNTIME_DIR/hunk-mcp` when available, or `$HOME/.hunk/hunk-mcp`
+otherwise. If neither exists, start a Hunk window on the host first.
 
 ## Container image contents
 
@@ -283,9 +290,8 @@ Untested:
 
 - **Docker.** Everything has only been built/run with Podman on macOS/arm64
   so far. Docker should work, but has not been tested.
-- **Hunk host-loopback reachability.** The `--add-host`/`HUNK_HOST` flags
-  are wired up, but never verified end-to-end against a real, running Hunk
-  daemon session on the host.
+- **Hunk agent forwarding.** `--hunk-agent` is wired up, but has not yet been
+  verified end-to-end against a real, running Hunk daemon session on the host.
 - **Linux.** So far the tool has only been tested on macOS.
 
 Not planned:

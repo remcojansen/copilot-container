@@ -90,6 +90,11 @@ printf '%s\n' \
     'exit 0' > "${FAKE_BIN}/ssh"
 chmod 755 "${FAKE_BIN}/ssh"
 
+assert_output_contains "no host Hunk runtime state was found" \
+    env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CAPTURE="${SSH_CAPTURE}" PATH="${FAKE_BIN}:${PATH}" \
+    "${LAUNCHER}" -m "${PROJECT}" --hunk-agent
+pass "--hunk-agent fails when host Hunk runtime state is missing"
+
 HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CAPTURE="${SSH_CAPTURE}" PATH="${FAKE_BIN}:${PATH}" \
     "${LAUNCHER}" -m "${PROJECT}" >/dev/null
 
@@ -114,7 +119,34 @@ grep -Fq "copilot@127.0.0.1" "${SSH_CAPTURE}" || fail "ssh session did not targe
 grep -Fq "IdentitiesOnly=yes" "${SSH_CAPTURE}" || fail "ssh session did not specify IdentitiesOnly=yes"
 grep -Fq "cd ${PROJECT} &&" "${SSH_CAPTURE}" || fail "remote command did not cd into the project"
 grep -Fq "exec copilot" "${SSH_CAPTURE}" || fail "remote command did not exec copilot"
+! grep -Fq "HUNK_MCP_HOST=" "${SSH_CAPTURE}" || fail "Hunk forwarding should be disabled by default"
+! grep -Fq "127.0.0.1:47657:127.0.0.1:47657" "${SSH_CAPTURE}" ||
+    fail "Hunk tunnel should be disabled by default"
 pass "launcher always connects in over ssh to run copilot"
+
+rm -f "${SSH_CAPTURE}" "${CAPTURE}"
+
+# Test --hunk-agent mounts Hunk's runtime state and exports broker settings
+mkdir -p "${TEST_DIR}/home/.hunk/hunk-mcp/security-v1"
+
+env HOME="${TEST_DIR}/home" HUNK_MCP_PORT=56789 CAPTURE="${CAPTURE}" \
+    SSH_CAPTURE="${SSH_CAPTURE}" PATH="${FAKE_BIN}:${PATH}" \
+    "${LAUNCHER}" -m "${PROJECT}" --hunk-agent >/dev/null
+
+hunk_runtime_line="$(grep -nFx "${TEST_DIR}/home/.hunk/hunk-mcp:/home/copilot/.hunk/hunk-mcp:ro" "${CAPTURE}" | cut -d: -f1)"
+
+[ -n "${hunk_runtime_line}" ] || fail "--hunk-agent did not mount host Hunk runtime state"
+grep -Fq "XDG_RUNTIME_DIR=/home/copilot/.hunk" "${SSH_CAPTURE}" ||
+    fail "--hunk-agent did not export XDG_RUNTIME_DIR"
+grep -Fq "HUNK_MCP_HOST=127.0.0.1" "${SSH_CAPTURE}" ||
+    fail "--hunk-agent did not export HUNK_MCP_HOST"
+grep -Fq "HUNK_MCP_PORT=56789" "${SSH_CAPTURE}" ||
+    fail "--hunk-agent did not pass through HUNK_MCP_PORT"
+grep -Fq "127.0.0.1:56789:127.0.0.1:56789" "${SSH_CAPTURE}" ||
+    fail "--hunk-agent did not tunnel the Hunk broker over SSH"
+grep -Fq "ExitOnForwardFailure=yes" "${SSH_CAPTURE}" ||
+    fail "--hunk-agent did not require the Hunk tunnel to be established"
+pass "--hunk-agent mounts Hunk runtime state and exports broker settings"
 
 rm -f "${SSH_CAPTURE}" "${CAPTURE}"
 

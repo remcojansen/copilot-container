@@ -86,6 +86,8 @@ find "${RUNTIME_HOME}" -xdev \
     ! -path "${RUNTIME_HOME}/.ssh/*" \
     ! -path "${RUNTIME_HOME}/.copilot-container-bridge" \
     ! -path "${RUNTIME_HOME}/.copilot-container-bridge/*" \
+    ! -path "${RUNTIME_HOME}/.hunk" \
+    ! -path "${RUNTIME_HOME}/.hunk/*" \
     -exec chown "${HOST_UID}:${HOST_GID}" {} +
 
 # --- SSH login for the host launcher -------------------------------------
