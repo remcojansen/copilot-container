@@ -2,7 +2,7 @@
 #
 # copilot-container image: Ubuntu-based dev environment with GitHub Copilot
 # CLI, a common toolchain (go/java/python3/unix utils/git/gh/glab/
-# markdownlint) and the Hunk CLI client preinstalled.
+# OpenTofu/markdownlint) and the Hunk CLI client preinstalled.
 #
 # Build (Podman, preferred):
 #   podman build -t copilot-container .
@@ -47,6 +47,18 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
         > /etc/apt/sources.list.d/github-cli.list
 
+# OpenTofu (Terraform-compatible CLI)
+RUN install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://get.opentofu.org/opentofu.gpg \
+        -o /etc/apt/keyrings/opentofu.gpg \
+    && curl -fsSL https://packages.opentofu.org/opentofu/tofu/gpgkey \
+        | gpg --dearmor -o /etc/apt/keyrings/opentofu-repo.gpg \
+    && chmod a+r /etc/apt/keyrings/opentofu.gpg /etc/apt/keyrings/opentofu-repo.gpg \
+    && printf '%s\n' \
+        "deb [signed-by=/etc/apt/keyrings/opentofu.gpg,/etc/apt/keyrings/opentofu-repo.gpg] https://packages.opentofu.org/opentofu/tofu/any/ any main" \
+        > /etc/apt/sources.list.d/opentofu.list \
+    && chmod a+r /etc/apt/sources.list.d/opentofu.list
+
 # ---- Base OS packages + common dev toolchain (single update+install) ----
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git make sed gawk grep ripgrep \
@@ -55,8 +67,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 python3-pip python3-venv \
         unzip xz-utils tar less nano vim \
         glab openssh-server \
+        tofu \
         nodejs gh \
     && rm -rf /var/lib/apt/lists/*
+
+RUN ln -s /usr/bin/tofu /usr/local/bin/terraform
 
 # ---- Hunk CLI client (talks to the host's Hunk loopback daemon only; the
 #      Hunk TUI itself always runs on the host) - no apt package upstream,

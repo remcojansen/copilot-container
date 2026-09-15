@@ -229,6 +229,8 @@ Built from `ubuntu:24.04`, the image includes:
 - GitHub Copilot CLI (pinned version, see below)
 - `git`, `gh` (GitHub CLI), `glab` (GitLab CLI)
 - `go`, a JDK (OpenJDK 21), `python3`
+- `tofu` (OpenTofu, Terraform-compatible CLI), with `terraform` symlinked to
+  `tofu`
 - Common Unix utilities: `make`, `sed`, `gawk`, `grep`, `ripgrep` (`rg`),
   `vim`, `tar`
 - `markdownlint-cli`
@@ -249,10 +251,10 @@ Packages available in Ubuntu's apt repositories (`git`, `make`, `sed`,
 `apt-get`, since they're GPG-signed, mirrored, and get security updates
 automatically. `gh` and Node.js (newer than Ubuntu's packaged version) are
 installed from their own signed apt repositories (maintainer's GPG key +
-sources file), rather than piping an install script to `bash`. Copilot CLI
-is installed via `npm` (pinned version, verified by npm's registry
-integrity hash); Hunk's release tarball is checksum-verified against its
-published `SHA256SUMS`.
+sources file), rather than piping an install script to `bash`. OpenTofu is
+installed from its signed apt repository. Copilot CLI is installed via `npm`
+(pinned version, verified by npm's registry integrity hash); Hunk's release
+tarball is checksum-verified against its published `SHA256SUMS`.
 
 ## Updating the pinned Copilot CLI version
 
