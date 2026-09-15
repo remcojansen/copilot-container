@@ -43,12 +43,12 @@ assert_output_contains "--engine must be podman or docker" \
 pass "invalid engines are rejected"
 
 assert_output_contains "GPG agent socket not found" \
-    env HOME="${TEST_DIR}/home" GNUPGHOME="${TEST_DIR}/home/.gnupg" "${LAUNCHER}" -m "${TEST_DIR}" --gpg-sign
-pass "--gpg-sign fails when GPG agent socket is missing"
+    env HOME="${TEST_DIR}/home" GNUPGHOME="${TEST_DIR}/home/.gnupg" "${LAUNCHER}" -m "${TEST_DIR}" --gpg-agent
+pass "--gpg-agent fails when GPG agent socket is missing"
 
 assert_output_contains "SSH_AUTH_SOCK is not set to a valid socket" \
-    env -u SSH_AUTH_SOCK HOME="${TEST_DIR}/home" "${LAUNCHER}" -m "${TEST_DIR}" --ssh-sign
-pass "--ssh-sign fails when SSH_AUTH_SOCK is missing"
+    env -u SSH_AUTH_SOCK HOME="${TEST_DIR}/home" "${LAUNCHER}" -m "${TEST_DIR}" --ssh-agent
+pass "--ssh-agent fails when SSH_AUTH_SOCK is missing"
 
 # --- Fake podman: always starts detached, always publishes port 65000 ----
 FAKE_BIN="${TEST_DIR}/bin"
@@ -128,7 +128,7 @@ pass "no --mount given defaults to the current directory"
 
 rm -f "${SSH_CAPTURE}" "${CAPTURE}"
 
-# Test --gpg-sign with socket & pubring present
+# Test --gpg-agent with socket & pubring present
 mkdir -p "${TEST_DIR}/home/.gnupg"
 touch "${TEST_DIR}/home/.gnupg/pubring.kbx"
 FAKE_GPGCONF="${FAKE_BIN}/gpgconf"
@@ -139,19 +139,41 @@ python3 -c "import socket; s = socket.socket(socket.AF_UNIX); s.bind('${TEST_DIR
 
 env HOME="${TEST_DIR}/home" GNUPGHOME="${TEST_DIR}/home/.gnupg" CAPTURE="${CAPTURE}" \
     SSH_CAPTURE="${SSH_CAPTURE}" PATH="${FAKE_BIN}:${PATH}" \
-    "${LAUNCHER}" -m "${PROJECT}" --gpg-sign >/dev/null
+    "${LAUNCHER}" -m "${PROJECT}" --gpg-agent >/dev/null
 
-[ -f "${SSH_CAPTURE}" ] || fail "--gpg-sign did not invoke the real ssh session"
+[ -f "${SSH_CAPTURE}" ] || fail "--gpg-agent did not invoke the real ssh session"
 
 gpg_kbx_line="$(grep -nFx "${TEST_DIR}/home/.gnupg/pubring.kbx:/home/copilot/.copilot-container-bridge/pubring.kbx:ro" "${CAPTURE}" | cut -d: -f1)"
 gpg_forward_line="$(grep -nFx "/home/copilot/.copilot-container-bridge/S.gpg-agent:${TEST_DIR}/home/.gnupg/S.gpg-agent" "${SSH_CAPTURE}" | cut -d: -f1)"
 gnupghome_line="$(grep -nFq "GNUPGHOME=" "${SSH_CAPTURE}" && echo yes || echo "")"
 
-[ -n "${gpg_kbx_line}" ] || fail "--gpg-sign did not mount pubring.kbx into the bridge dir"
-[ -n "${gpg_forward_line}" ] || fail "--gpg-sign did not forward the gpg-agent socket over ssh"
-[ -n "${gnupghome_line}" ] || fail "--gpg-sign did not export GNUPGHOME in the remote command"
+[ -n "${gpg_kbx_line}" ] || fail "--gpg-agent did not mount pubring.kbx into the bridge dir"
+[ -n "${gpg_forward_line}" ] || fail "--gpg-agent did not forward the gpg-agent socket over ssh"
+[ -n "${gnupghome_line}" ] || fail "--gpg-agent did not export GNUPGHOME in the remote command"
 grep -Fq "copilot@127.0.0.1" "${SSH_CAPTURE}" || fail "ssh session did not target copilot@127.0.0.1"
-pass "--gpg-sign mounts public keyrings and forwards the agent socket over ssh"
+pass "--gpg-agent mounts public keyrings and forwards the agent socket over ssh"
+
+rm -f "${SSH_CAPTURE}" "${CAPTURE}"
+
+# Test --ssh-agent with socket and known_hosts present
+mkdir -p "${TEST_DIR}/home/.ssh"
+printf '%s\n' 'github.com ssh-ed25519 test-key' > "${TEST_DIR}/home/.ssh/known_hosts"
+python3 -c "import socket; s = socket.socket(socket.AF_UNIX); s.bind('${TEST_DIR}/home/.ssh/S.ssh-agent')"
+
+env HOME="${TEST_DIR}/home" SSH_AUTH_SOCK="${TEST_DIR}/home/.ssh/S.ssh-agent" CAPTURE="${CAPTURE}" \
+    SSH_CAPTURE="${SSH_CAPTURE}" PATH="${FAKE_BIN}:${PATH}" \
+    "${LAUNCHER}" -m "${PROJECT}" --ssh-agent >/dev/null
+
+[ -f "${SSH_CAPTURE}" ] || fail "--ssh-agent did not invoke the real ssh session"
+
+known_hosts_line="$(grep -nFx "${TEST_DIR}/home/.ssh/known_hosts:/etc/ssh/ssh_known_hosts:ro" "${CAPTURE}" | cut -d: -f1)"
+ssh_forward_line="$(grep -nFx "/home/copilot/.copilot-container-bridge/ssh-agent.sock:${TEST_DIR}/home/.ssh/S.ssh-agent" "${SSH_CAPTURE}" | cut -d: -f1)"
+ssh_auth_sock_line="$(grep -nFq "SSH_AUTH_SOCK=" "${SSH_CAPTURE}" && echo yes || echo "")"
+
+[ -n "${known_hosts_line}" ] || fail "--ssh-agent did not mount host known_hosts"
+[ -n "${ssh_forward_line}" ] || fail "--ssh-agent did not forward the ssh-agent socket over ssh"
+[ -n "${ssh_auth_sock_line}" ] || fail "--ssh-agent did not export SSH_AUTH_SOCK in the remote command"
+pass "--ssh-agent mounts known_hosts and forwards the agent socket over ssh"
 
 assert_output_contains "HOST_UID must be a numeric user ID" \
     env HOST_UID=invalid bash "${ENTRYPOINT}"

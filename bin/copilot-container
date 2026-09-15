@@ -29,10 +29,10 @@
 #                            container's ~/.gitconfig (default: ~/.gitconfig).
 #                            Useful for switching between multiple gitconfig
 #                            profiles (e.g. ~/.gitconfig-work) per project.
-#   --gpg-sign               Enable GPG commit signing by forwarding host's
-#                            gpg-agent socket and mounting public keyrings.
-#   --ssh-sign               Enable SSH commit signing (gpg.format=ssh) by
-#                            forwarding host's SSH_AUTH_SOCK (ssh-agent).
+#   --gpg-agent              Forward host's gpg-agent socket and mount public
+#                            keyrings for GPG commit signing.
+#   --ssh-agent              Forward host's SSH_AUTH_SOCK (ssh-agent) for SSH
+#                            public-key auth and SSH commit signing.
 #   -h, --help               Show this help and exit
 #
 # Any arguments after `--` are forwarded verbatim to the `copilot` CLI
@@ -166,8 +166,8 @@ wait_for_ssh_ready() {
 
 IMAGE="${COPILOT_CONTAINER_IMAGE:-copilot-container}"
 GITCONFIG_PATH="${HOME}/.gitconfig"
-GPG_SIGN=0
-SSH_SIGN=0
+GPG_AGENT=0
+SSH_AGENT=0
 MOUNT_ARGS=()
 FORWARD_ARGS=()
 
@@ -219,12 +219,12 @@ while [ $# -gt 0 ]; do
             GITCONFIG_PATH="$2"
             shift 2
             ;;
-        --gpg-sign)
-            GPG_SIGN=1
+        --gpg-agent)
+            GPG_AGENT=1
             shift
             ;;
-        --ssh-sign)
-            SSH_SIGN=1
+        --ssh-agent)
+            SSH_AGENT=1
             shift
             ;;
         -h|--help)
@@ -252,17 +252,18 @@ if [ "${GITCONFIG_PATH}" != "${HOME}/.gitconfig" ] && [ ! -f "${GITCONFIG_PATH}"
     exit 1
 fi
 
-# --- Validate GPG/SSH signing requirements -------------------------------
-# Both --gpg-sign and --ssh-sign forward a host socket over the SSH session
+# --- Validate GPG/SSH agent forwarding requirements ----------------------
+# Both --gpg-agent and --ssh-agent forward host sockets over the SSH session.
 BRIDGE_DIR="/home/copilot/.copilot-container-bridge"
 
 GPG_FLAGS=()
+SSH_FLAGS=()
 REMOTE_ENV_VARS=()
 gpg_socket=""
-if [ "${GPG_SIGN}" -eq 1 ]; then
+if [ "${GPG_AGENT}" -eq 1 ]; then
     gpg_socket="$(gpgconf --list-dirs agent-socket 2>/dev/null || echo "${HOME}/.gnupg/S.gpg-agent")"
     if [ ! -S "${gpg_socket}" ]; then
-        echo "error: --gpg-sign requested, but GPG agent socket not found at: ${gpg_socket}" >&2
+        echo "error: --gpg-agent requested, but GPG agent socket not found at: ${gpg_socket}" >&2
         echo "hint: ensure gpg-agent is running on the host (e.g. gpgconf --launch gpg-agent)" >&2
         exit 1
     fi
@@ -279,12 +280,15 @@ if [ "${GPG_SIGN}" -eq 1 ]; then
 fi
 
 ssh_agent_sock_host=""
-if [ "${SSH_SIGN}" -eq 1 ]; then
+if [ "${SSH_AGENT}" -eq 1 ]; then
     ssh_agent_sock_host="${SSH_AUTH_SOCK:-}"
     if [ -z "${ssh_agent_sock_host}" ] || [ ! -S "${ssh_agent_sock_host}" ]; then
-        echo "error: --ssh-sign requested, but SSH_AUTH_SOCK is not set to a valid socket" >&2
+        echo "error: --ssh-agent requested, but SSH_AUTH_SOCK is not set to a valid socket" >&2
         echo "hint: ensure ssh-agent is running on the host and SSH_AUTH_SOCK is exported" >&2
         exit 1
+    fi
+    if [ -f "${HOME}/.ssh/known_hosts" ]; then
+        SSH_FLAGS+=(-v "${HOME}/.ssh/known_hosts:/etc/ssh/ssh_known_hosts:ro")
     fi
     REMOTE_ENV_VARS+=("SSH_AUTH_SOCK=${BRIDGE_DIR}/ssh-agent.sock")
 fi
@@ -391,6 +395,7 @@ RUN_FLAGS=(
     "${GIT_FLAGS[@]}"
     "${COPILOT_FLAGS[@]}"
     "${GPG_FLAGS[@]}"
+    "${SSH_FLAGS[@]}"
     -e "HOST_UID=${HOST_UID}"
     -e "HOST_GID=${HOST_GID}"
     -e "AUTHORIZED_KEYS_B64=${AUTHORIZED_KEYS_B64}"
@@ -438,10 +443,10 @@ ssh_common_opts=(
 wait_for_ssh_ready "${ssh_common_opts[@]}"
 
 ssh_forward_flags=()
-if [ "${GPG_SIGN}" -eq 1 ]; then
+if [ "${GPG_AGENT}" -eq 1 ]; then
     ssh_forward_flags+=(-R "${BRIDGE_DIR}/S.gpg-agent:${gpg_socket}")
 fi
-if [ "${SSH_SIGN}" -eq 1 ]; then
+if [ "${SSH_AGENT}" -eq 1 ]; then
     ssh_forward_flags+=(-R "${BRIDGE_DIR}/ssh-agent.sock:${ssh_agent_sock_host}")
 fi
 

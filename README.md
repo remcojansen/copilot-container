@@ -91,20 +91,20 @@ copilot-container [-m <path> ...] [options] [-- <copilot CLI args...>]
   -e, --engine <podman|docker>  Force a specific container engine
   -g, --gitconfig <path>        Host file to mount read-only as ~/.gitconfig
                                  (default: ~/.gitconfig)
-  --gpg-sign                    Enable GPG commit signing (forwards host gpg-agent socket
-                                 and mounts public keyrings read-only)
-  --ssh-sign                    Enable SSH commit signing (gpg.format=ssh) by
-                                 forwarding host's SSH_AUTH_SOCK (ssh-agent)
+  --gpg-agent                   Forward host gpg-agent socket and mount public keyrings
+                                 read-only for GPG commit signing
+  --ssh-agent                   Forward host SSH_AUTH_SOCK (ssh-agent) for SSH public-key
+                                 auth and SSH commit signing
   -h, --help                    Show help
 ```
 
-Example with multiple mounted projects, custom gitconfig, GPG signing and additional copilot flags:
+Example with multiple mounted projects, custom gitconfig, GPG agent forwarding and additional copilot flags:
 
 ```sh
 copilot-container \
   -m /path/to/your/first-project \
   -m /path/to/your/second-project \
-  --gpg-sign \
+  --gpg-agent \
   --gitconfig ~/.gitconfig-default \
   -- \
   --model claude-sonnet-5 \
@@ -181,24 +181,28 @@ It's mounted **read-only**: changes made from inside the container (e.g.
 `git config --global ...`) do not persist back to the host file. Run those
 commands on the host instead.
 
-### Commit signing (GPG / SSH)
+### Agent forwarding (GPG / SSH)
 
-`--gpg-sign` and `--ssh-sign` forward your host's `gpg-agent` socket and/or
-`SSH_AUTH_SOCK` (ssh-agent) into the container, over the same SSH session
-the launcher always establishes (see [Architecture](#architecture) above).
-Your private key material remains strictly on the host — only the live
-agent socket is forwarded, plus (for GPG) your public keyrings
+`--gpg-agent` and `--ssh-agent` forward your host's `gpg-agent` socket
+and/or `SSH_AUTH_SOCK` (ssh-agent) into the container, over the same SSH
+session the launcher always establishes (see [Architecture](#architecture)
+above). Your private key material remains strictly on the host — only the
+live agent socket is forwarded, plus your GPG public keyrings
 (`pubring.kbx` / `pubring.gpg`) read-only.
 
 ```sh
-copilot-container -m ~/code/my-project --gpg-sign
-copilot-container -m ~/code/my-project --ssh-sign
+copilot-container -m ~/code/my-project --gpg-agent
+copilot-container -m ~/code/my-project --ssh-agent
 ```
 
 Ensure `gpg-agent`/`ssh-agent` is active on your host before running. Because
 `~/.gitconfig` is mounted read-only, Git inside the container inherits your
 `user.signingKey`/`gpg.format` and `commit.gpgSign` configuration
 automatically.
+
+When `--ssh-agent` is used and `~/.ssh/known_hosts` exists on the host, it is
+mounted read-only as `/etc/ssh/ssh_known_hosts` so GitHub SSH remotes can use
+the forwarded agent without a separate host-key prompt inside the container.
 
 ## Hunk integration
 

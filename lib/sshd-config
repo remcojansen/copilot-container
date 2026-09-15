@@ -2,7 +2,7 @@
 # launcher always connects in over SSH as the container's dynamically
 # aligned runtime user ("copilot") to run the actual Copilot CLI command
 # (see bin/copilot-container and lib/entrypoint.sh) — there's no separate
-# `podman/docker run -it` attach. When --gpg-sign/--ssh-sign was
+# `podman/docker run -it` attach. When --gpg-agent/--ssh-agent was
 # requested, this same connection also carries gpg-agent/ssh-agent socket
 # forwards. Not a general-purpose SSH server: key-only, single user,
 # regenerated fresh (host key + authorized_keys) every run. Loopback-only
