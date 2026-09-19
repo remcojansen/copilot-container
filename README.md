@@ -286,10 +286,9 @@ base OS.
 
 ## Known limitations / not yet implemented
 
-Untested:
-
-- **Docker / Linux.** Everything has been built/run with Podman on macOS/arm64 so far. 
-
-Not planned:
-
+- **Keyring/keychain forwarding** is missing. Copilot authentication requires
+  an authenticated github-cli session on the host or storing the token in plain
+  text on the attached volume inside the container.
+- **Docker support has NOT been tested.** Everything has been built/run with
+  Podman on macOS/arm64 and Linux so far. 
 - **Windows is not a supported host platform.**
