@@ -87,3 +87,138 @@ Source: <https://github.com/github/copilot-cli/blob/main/LICENSE.md>
 
 "GitHub" and "GitHub Copilot" are trademarks of GitHub, Inc. This project is
 not affiliated with, endorsed by, or sponsored by GitHub, Inc.
+
+## GitHub CLI (gh)
+
+The image installs an unmodified copy of `gh`, redistributed under the MIT
+License:
+
+> MIT License
+>
+> Copyright (c) 2019 GitHub Inc.
+>
+> Permission is hereby granted, free of charge, to any person obtaining a copy
+> of this software and associated documentation files (the "Software"), to deal
+> in the Software without restriction, including without limitation the rights
+> to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+> copies of the Software, and to permit persons to whom the Software is
+> furnished to do so, subject to the following conditions:
+>
+> The above copyright notice and this permission notice shall be included in all
+> copies or substantial portions of the Software.
+>
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+> IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+> FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+> AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+> LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+> OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+> SOFTWARE.
+
+Source: <https://github.com/cli/cli/blob/trunk/LICENSE>
+
+## Node.js
+
+The image installs an unmodified copy of Node.js, redistributed under the
+MIT License:
+
+> Copyright Node.js contributors. All rights reserved.
+>
+> Permission is hereby granted, free of charge, to any person obtaining a copy
+> of this software and associated documentation files (the "Software"), to
+> deal in the Software without restriction, including without limitation the
+> rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+> sell copies of the Software, and to permit persons to whom the Software is
+> furnished to do so, subject to the following conditions:
+>
+> The above copyright notice and this permission notice shall be included in
+> all copies or substantial portions of the Software.
+>
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+> IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+> FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+> AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+> LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+> FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+> IN THE SOFTWARE.
+
+Node.js also bundles further third-party components under their own
+licenses; see <https://github.com/nodejs/node/blob/main/LICENSE> for the
+full list.
+
+Source: <https://github.com/nodejs/node/blob/main/LICENSE>
+
+## OpenTofu (tofu)
+
+The image installs an unmodified copy of OpenTofu, redistributed under the
+Mozilla Public License, version 2.0 (MPL-2.0):
+
+> Copyright (c) The OpenTofu Authors
+> Copyright (c) 2014 HashiCorp, Inc.
+>
+> Mozilla Public License, version 2.0
+
+The full license text is available at
+<https://github.com/opentofu/opentofu/blob/main/LICENSE>. Under the MPL-2.0,
+any modifications to OpenTofu's own source files must be made available
+under the same license; this project distributes OpenTofu unmodified.
+
+Source: <https://github.com/opentofu/opentofu/blob/main/LICENSE>
+
+## Hunk CLI
+
+The image installs an unmodified copy of the Hunk CLI client
+(`hunkdiff-linux-*` release binary), redistributed under the MIT License:
+
+> MIT License
+>
+> Copyright (c) Modem Labs Inc.
+>
+> Permission is hereby granted, free of charge, to any person obtaining a copy
+> of this software and associated documentation files (the "Software"), to deal
+> in the Software without restriction, including without limitation the rights
+> to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+> copies of the Software, and to permit persons to whom the Software is
+> furnished to do so, subject to the following conditions:
+>
+> The above copyright notice and this permission notice shall be included in all
+> copies or substantial portions of the Software.
+>
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+> IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+> FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+> AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+> LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+> OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+> SOFTWARE.
+
+Source: <https://github.com/modem-dev/hunk/blob/main/LICENSE>
+
+## markdownlint-cli
+
+The image installs an unmodified copy of the `markdownlint-cli` package,
+redistributed under the MIT License:
+
+> The MIT License (MIT)
+>
+> Copyright (c) 2016-2020 Igor Shubovych
+>
+> Permission is hereby granted, free of charge, to any person obtaining a copy
+> of this software and associated documentation files (the "Software"), to deal
+> in the Software without restriction, including without limitation the rights
+> to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+> copies of the Software, and to permit persons to whom the Software is
+> furnished to do so, subject to the following conditions:
+>
+> The above copyright notice and this permission notice shall be included in all
+> copies or substantial portions of the Software.
+>
+> THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+> IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+> FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+> AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+> LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+> OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+> SOFTWARE.
+
+Source: <https://github.com/igorshubovych/markdownlint-cli/blob/master/LICENSE>
