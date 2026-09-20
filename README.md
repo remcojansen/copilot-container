@@ -284,6 +284,19 @@ the same way via their respective `--build-arg` options. The Ubuntu base image
 is pinned by digest and should be refreshed deliberately when updating the
 base OS.
 
+## Licensing
+
+This repository's own code is MIT-licensed (see `LICENSE`). The container
+image also bundles unmodified third-party software — most notably GitHub
+Copilot CLI, redistributed under its own license — alongside the
+functionality this project adds (the launcher, host/container SSH bridge,
+Git/Copilot config wiring, Hunk integration, and the rest of the toolchain).
+See [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) for the full license
+text and attribution notices for bundled third-party components.
+
+This project is not affiliated with, endorsed by, or sponsored by GitHub,
+Inc. "GitHub" and "GitHub Copilot" are trademarks of GitHub, Inc.
+
 ## Known limitations / not yet implemented
 
 - **Keyring/keychain forwarding** is missing. Copilot authentication requires
