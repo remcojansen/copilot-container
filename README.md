@@ -7,6 +7,23 @@ and forwards your preferred Copilot CLI flags, container-tuned
 Copilot defaults, personal user-level Copilot instructions, and integration
 with [Hunk](https://hunk.dev/) (a host-side terminal diff reviewer).
 
+## Features
+
+- 🛡️ **Contained execution** — Copilot runs isolated in the container, with
+  access limited to exactly the directories you mount; nothing else on your
+  host is reachable
+- 🚫 **No accidental blast radius** — even a destructive/misbehaving command
+  stays scoped to the container's mounts, not your whole filesystem
+- ✅ **Skip the permission fatigue** — the container itself is the sandbox,
+  so you don't need repetitive manual approval prompts to feel safe letting
+  Copilot act
+- 💾 **Persistent per-project state** — Copilot config, permission approvals,
+  and session history survive across runs, scoped per project
+- 🔑 **Seamless auth & commit signing** — GitHub token, GPG/SSH agent all
+  forwarded live from the host, nothing copied into the image or volume
+- 🌉 **Locked-down host bridge** — the only path in/out is a single-use,
+  loopback-only SSH session; no other host access is exposed
+
 ## Prerequisites
 
 - [Podman](https://podman.io/) (preferred) or [Docker](https://www.docker.com/)
@@ -72,8 +89,9 @@ build`.
 9. Starts the container **detached**, then connects in over a narrowly-scoped,
    loopback-only SSH session (fresh single-use keypair, torn down with the
    container) to run `copilot` as the aligned runtime user, forwarding any
-   args you passed after `--`. See [Architecture](#architecture) below for
-   why.
+   args you passed after `--`. This SSH bridge is also what
+   [agent forwarding](#agent-forwarding-gpg--ssh) and Hunk's broker
+   ([Hunk integration](#hunk-integration)) piggyback on.
 
 ### Options
 
@@ -180,7 +198,7 @@ commands on the host instead.
 
 `--gpg-agent` and `--ssh-agent` forward your host's `gpg-agent` socket
 and/or `SSH_AUTH_SOCK` (ssh-agent) into the container, over the same SSH
-session the launcher always establishes (see [Architecture](#architecture)
+session the launcher always establishes (see [What the launcher does](#what-the-launcher-does)
 above). Your private key material remains strictly on the host — only the
 live agent socket is forwarded, plus your GPG public keyrings
 (`pubring.kbx` / `pubring.gpg`) read-only.
@@ -247,7 +265,7 @@ Built from `ubuntu:24.04`, the image includes:
 - `markdownlint-cli`
 - `hunk` (CLI client only — see [Hunk integration](#hunk-integration))
 - `openssh-server`, used to accept the launcher's per-run SSH session (see
-  [Architecture](#architecture) above) — the entrypoint aligns the runtime
+  [What the launcher does](#what-the-launcher-does) above) — the entrypoint aligns the runtime
   user's UID/GID and seeds Copilot config, then hands off to sshd as the
   container's foreground process; `copilot` itself runs inside that SSH
   session, not the entrypoint
