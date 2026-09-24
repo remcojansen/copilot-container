@@ -400,6 +400,12 @@ RUN_FLAGS=(
     -e "AUTHORIZED_KEYS_B64=${AUTHORIZED_KEYS_B64}"
 )
 
+# Ensure current user's UID and GID are preserved in the container when
+# running rootless Podman (default on most Linux distributions).
+if [ "${ENGINE}" = "podman" ]; then
+    RUN_FLAGS+=(--userns=keep-id --user root)
+fi
+
 # GH token passthrough (never persisted, only forwarded if present on host).
 # Falls back to `gh auth token` when GH_TOKEN isn't already set.
 # Passed to the remote `copilot` invocation itself (see below), not as
