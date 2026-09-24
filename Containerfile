@@ -64,8 +64,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git make sed gawk grep ripgrep \
         golang-go \
         openjdk-21-jdk-headless \
+        maven \
         python3 python3-pip python3-venv \
         unzip xz-utils tar less nano vim \
+        jq shellcheck \
         glab openssh-server \
         tofu \
         nodejs gh \

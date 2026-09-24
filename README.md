@@ -257,11 +257,12 @@ Built from `ubuntu:24.04`, the image includes:
 
 - GitHub Copilot CLI (pinned version, see below)
 - `git`, `gh` (GitHub CLI), `glab` (GitLab CLI)
-- `go`, a JDK (OpenJDK 21), `python3`
+- `go`, a JDK (OpenJDK 21), `maven`, `python3`
 - `tofu` (OpenTofu, Terraform-compatible CLI), with `terraform` symlinked to
   `tofu`
 - Common Unix utilities: `make`, `sed`, `gawk`, `grep`, `ripgrep` (`rg`),
-  `vim`, `tar`
+  `vim`, `tar`, `jq`
+- `shellcheck`
 - `markdownlint-cli`
 - `hunk` (CLI client only — see [Hunk integration](#hunk-integration))
 - `openssh-server`, used to accept the launcher's per-run SSH session (see
@@ -275,8 +276,9 @@ This list is expected to grow — add packages to `Containerfile` as needed.
 ### Package installation approach
 
 Packages available in Ubuntu's apt repositories (`git`, `make`, `sed`,
-`gawk`, `grep`, `ripgrep`, `golang-go`, `openjdk-21-jdk-headless`,
-`python3`, `vim`, `tar`, `openssh-server`, `glab`, ...) are installed via
+`gawk`, `grep`, `ripgrep`, `golang-go`, `openjdk-21-jdk-headless`, `maven`,
+`python3`, `vim`, `tar`, `jq`, `shellcheck`, `openssh-server`, `glab`, ...)
+are installed via
 `apt-get`, since they're GPG-signed, mirrored, and get security updates
 automatically. `gh` and Node.js (newer than Ubuntu's packaged version) are
 installed from their own signed apt repositories (maintainer's GPG key +
