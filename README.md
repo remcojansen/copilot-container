@@ -296,10 +296,11 @@ installed from its own signed apt repository (maintainer's GPG key + sources
 file), rather than piping an install script to `bash`.
 
 Tools that need an exact pinned version — Copilot CLI, Hunk, `mado` and
-`asdf` — are installed from their official upstream release tarballs via
-the shared `lib/install-release.sh` script, each verified against a
-published checksum. This keeps every pinned tool's install on one
-consistent, auditable pattern instead of a mix of apt repos and npm.
+`asdf` — are installed from their official upstream release tarballs,
+each verified against a published checksum, following the same
+download-verify-extract-install pattern. This keeps every pinned tool's
+install on one consistent, auditable pattern instead of a mix of apt repos
+and npm.
 
 ## Updating pinned tool versions
 

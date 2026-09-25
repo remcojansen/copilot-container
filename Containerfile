@@ -54,10 +54,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         gh \
     && rm -rf /var/lib/apt/lists/*
 
-# ---- Shared installer for pinned, checksum-verified release tarballs -----
-COPY lib/install-release.sh /usr/local/sbin/install-release.sh
-RUN chmod 0755 /usr/local/sbin/install-release.sh
-
 # ---- Resolve the target architecture once for the binary installs below.
 #      TARGETARCH is BuildKit's automatic per-platform ARG (correct even
 #      when cross-building via buildx, unlike `dpkg --print-architecture`,
@@ -76,37 +72,62 @@ RUN set -eux; \
     esac > /etc/copilot-container-arch.env
 
 # ---- Hunk CLI client (talks to the host's Hunk loopback daemon only; the
-#      Hunk TUI itself always runs on the host). ---------------------------
-RUN . /etc/copilot-container-arch.env && install-release.sh \
-        --name hunk --mode bin --strip-components 1 \
-        --url "https://github.com/modem-dev/hunk/releases/download/v${HUNK_VERSION}/hunkdiff-linux-${HUNK_ARCH}.tar.gz" \
-        --checksum-url "https://github.com/modem-dev/hunk/releases/download/v${HUNK_VERSION}/SHA256SUMS" \
-        --checksum-style sumfile
+#      Hunk TUI itself always runs on the host) - no apt package upstream,
+#      so verify the release tarball against its published SHA256SUMS. ----
+RUN set -eux; \
+    . /etc/copilot-container-arch.env; \
+    workdir="$(mktemp -d)"; \
+    cd "${workdir}"; \
+    curl -fsSL -O "https://github.com/modem-dev/hunk/releases/download/v${HUNK_VERSION}/hunkdiff-linux-${HUNK_ARCH}.tar.gz"; \
+    curl -fsSL -O "https://github.com/modem-dev/hunk/releases/download/v${HUNK_VERSION}/SHA256SUMS"; \
+    grep " hunkdiff-linux-${HUNK_ARCH}.tar.gz\$" SHA256SUMS | sha256sum -c -; \
+    tar -xzf "hunkdiff-linux-${HUNK_ARCH}.tar.gz" --strip-components=1; \
+    install -m 0755 hunk /usr/local/bin/hunk; \
+    cd /; rm -rf "${workdir}"
 
-# ---- Copilot CLI (pinned) -------------------------------------------------
-RUN . /etc/copilot-container-arch.env && install-release.sh \
-        --name copilot --mode bin \
-        --url "https://github.com/github/copilot-cli/releases/download/v${COPILOT_CLI_VERSION}/copilot-linux-${COPILOT_ARCH}.tar.gz" \
-        --checksum-url "https://github.com/github/copilot-cli/releases/download/v${COPILOT_CLI_VERSION}/SHA256SUMS.txt" \
-        --checksum-style sumfile
+# ---- Copilot CLI (pinned) - no apt package upstream, so verify the
+#      release tarball against its published SHA256SUMS.txt. -------------
+RUN set -eux; \
+    . /etc/copilot-container-arch.env; \
+    workdir="$(mktemp -d)"; \
+    cd "${workdir}"; \
+    curl -fsSL -O "https://github.com/github/copilot-cli/releases/download/v${COPILOT_CLI_VERSION}/copilot-linux-${COPILOT_ARCH}.tar.gz"; \
+    curl -fsSL -O "https://github.com/github/copilot-cli/releases/download/v${COPILOT_CLI_VERSION}/SHA256SUMS.txt"; \
+    grep " copilot-linux-${COPILOT_ARCH}.tar.gz\$" SHA256SUMS.txt | sha256sum -c -; \
+    tar -xzf "copilot-linux-${COPILOT_ARCH}.tar.gz"; \
+    install -m 0755 copilot /usr/local/bin/copilot; \
+    cd /; rm -rf "${workdir}"
 
-# ---- mado (markdownlint-compatible Rust linter) --------------------------
-RUN . /etc/copilot-container-arch.env && install-release.sh \
-        --name mado --mode bin \
-        --url "https://github.com/akiomik/mado/releases/download/v${MADO_VERSION}/mado-Linux-gnu-${MADO_ARCH}.tar.gz" \
-        --checksum-url "https://github.com/akiomik/mado/releases/download/v${MADO_VERSION}/mado-Linux-gnu-${MADO_ARCH}.tar.gz.sha256" \
-        --checksum-style sumfile
+# ---- mado (markdownlint-compatible Rust linter) - no apt package
+#      upstream, so verify the release tarball against its published
+#      .sha256 sidecar. -------------------------------------------------
+RUN set -eux; \
+    . /etc/copilot-container-arch.env; \
+    workdir="$(mktemp -d)"; \
+    cd "${workdir}"; \
+    curl -fsSL -O "https://github.com/akiomik/mado/releases/download/v${MADO_VERSION}/mado-Linux-gnu-${MADO_ARCH}.tar.gz"; \
+    curl -fsSL -O "https://github.com/akiomik/mado/releases/download/v${MADO_VERSION}/mado-Linux-gnu-${MADO_ARCH}.tar.gz.sha256"; \
+    sha256sum -c "mado-Linux-gnu-${MADO_ARCH}.tar.gz.sha256"; \
+    tar -xzf "mado-Linux-gnu-${MADO_ARCH}.tar.gz"; \
+    install -m 0755 mado /usr/local/bin/mado; \
+    cd /; rm -rf "${workdir}"
 
-# ---- asdf (per-project language/tool version manager) --------------------
-# Provisions everything project-specific (Node, Go, Java, Python, Terraform/
-# OpenTofu, ...) on demand into the per-project persistent volume at
-# ~/.asdf, rather than baking one global version of each into the image
-# (see the first-run setup script for how this gets triggered).
-RUN install-release.sh \
-        --name asdf --mode bin \
-        --url "https://github.com/asdf-vm/asdf/releases/download/v${ASDF_VERSION}/asdf-v${ASDF_VERSION}-linux-${TARGETARCH}.tar.gz" \
-        --checksum-url "https://github.com/asdf-vm/asdf/releases/download/v${ASDF_VERSION}/asdf-v${ASDF_VERSION}-linux-${TARGETARCH}.tar.gz.md5" \
-        --checksum-style rawhash --hash-algo md5
+# ---- asdf (per-project language/tool version manager) - no apt package
+#      upstream, and asdf only publishes MD5 checksums (no SHA256SUMS
+#      file), so verify against that instead. Provisions everything
+#      project-specific (Node, Go, Java, Python, Terraform/OpenTofu, ...)
+#      on demand into the per-project persistent volume at ~/.asdf, rather
+#      than baking one global version of each into the image (see the
+#      first-run setup script for how this gets triggered). --------------
+RUN set -eux; \
+    workdir="$(mktemp -d)"; \
+    cd "${workdir}"; \
+    curl -fsSL -O "https://github.com/asdf-vm/asdf/releases/download/v${ASDF_VERSION}/asdf-v${ASDF_VERSION}-linux-${TARGETARCH}.tar.gz"; \
+    curl -fsSL -o asdf.tar.gz.md5 "https://github.com/asdf-vm/asdf/releases/download/v${ASDF_VERSION}/asdf-v${ASDF_VERSION}-linux-${TARGETARCH}.tar.gz.md5"; \
+    echo "$(cat asdf.tar.gz.md5)  asdf-v${ASDF_VERSION}-linux-${TARGETARCH}.tar.gz" | md5sum -c -; \
+    tar -xzf "asdf-v${ASDF_VERSION}-linux-${TARGETARCH}.tar.gz"; \
+    install -m 0755 asdf /usr/local/bin/asdf; \
+    cd /; rm -rf "${workdir}"
 
 RUN rm -f /etc/copilot-container-arch.env
 
