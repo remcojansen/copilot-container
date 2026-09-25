@@ -459,6 +459,11 @@ fi
 # sshd's own SetEnv has its own parsing gotchas (e.g. with `#`). %q-quoting
 # every piece here and passing it as one argv element sidesteps both.
 remote_cmd="cd $(printf '%q' "${PRIMARY_CONTAINER_PATH}")"
+# Prepend asdf's shims dir so per-project pinned tool versions (see the
+# first-run setup script) take priority; asdf only ever creates a shim for
+# a plugin the project has actually opted into, so this has no effect
+# until then.
+remote_cmd+=" && export PATH=/home/copilot/.asdf/shims:\${PATH}"
 for kv in "${REMOTE_ENV_VARS[@]+"${REMOTE_ENV_VARS[@]}"}"; do
     name="${kv%%=*}"
     value="${kv#*=}"
