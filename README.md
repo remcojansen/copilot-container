@@ -257,9 +257,9 @@ Built from `ubuntu:24.04`, the image includes:
 
 - GitHub Copilot CLI (pinned version, see below)
 - `git`, `gh` (GitHub CLI), `glab` (GitLab CLI)
-- `go`, a JDK (Eclipse Temurin 21), `maven`, `python3`
-- `tofu` (OpenTofu, Terraform-compatible CLI), with `terraform` symlinked to
-  `tofu`
+- `asdf`, for provisioning per-project language/tool versions (Node, Go,
+  Java, Python, Terraform/OpenTofu, ...) on demand — see
+  [Per-project language/tool versions](#per-project-languagetool-versions)
 - Common Unix utilities: `make`, `sed`, `gawk`, `grep`, `ripgrep` (`rg`),
   `vim`, `tar`, `jq`
 - `shellcheck`
@@ -273,23 +273,33 @@ Built from `ubuntu:24.04`, the image includes:
 
 This list is expected to grow — add packages to `Containerfile` as needed.
 
+### Per-project language/tool versions
+
+Language runtimes and project-specific tools (Node, Go, a JDK, Python,
+Terraform/OpenTofu, ...) are deliberately **not** baked into the image.
+Instead, `asdf` is preinstalled and its data directory (`~/.asdf`) lives
+under `/home/copilot`, which is the per-project persistent volume (see
+[What the launcher does](#what-the-launcher-does)) — so once you
+`asdf plugin add`/`asdf install` what a project needs, it's provisioned
+just once and persists across runs of that same project, without
+requiring an image rebuild or a shared, one-size-fits-all global version.
+`asdf`'s shims directory is put ahead of the rest of `PATH` for this
+reason.
+
 ### Package installation approach
 
 Packages available in Ubuntu's apt repositories (`git`, `make`, `sed`,
-`gawk`, `grep`, `ripgrep`, `python3`, `vim`, `tar`, `jq`, `shellcheck`,
+`gawk`, `grep`, `ripgrep`, `vim`, `tar`, `jq`, `shellcheck`,
 `openssh-server`, `glab`, ...) are installed via `apt-get`, since they're
 GPG-signed, mirrored, and get security updates automatically. `gh` is
 installed from its own signed apt repository (maintainer's GPG key + sources
 file), rather than piping an install script to `bash`.
 
-Tools that need an exact pinned version — Copilot CLI, Hunk, `mado`,
-Node.js, Go, Maven, OpenJDK (Eclipse Temurin) and OpenTofu — are installed
-from their official upstream release tarballs via the shared
-`lib/install-release.sh` script, each verified against a published checksum
-(a multi-entry sums file, a per-asset sidecar file, or, for Go, the
-`go.dev/dl` JSON API, since it has no downloadable checksum file). This
-keeps every pinned tool's install on one consistent, auditable pattern
-instead of a mix of apt repos and npm.
+Tools that need an exact pinned version — Copilot CLI, Hunk, `mado` and
+`asdf` — are installed from their official upstream release tarballs via
+the shared `lib/install-release.sh` script, each verified against a
+published checksum. This keeps every pinned tool's install on one
+consistent, auditable pattern instead of a mix of apt repos and npm.
 
 ## Updating pinned tool versions
 
@@ -302,9 +312,8 @@ podman build --build-arg COPILOT_CLI_VERSION=X.Y.Z -t copilot-container .
 
 Once you've verified the new version works well, update the corresponding
 default in `Containerfile`. The pinned tools and their `ARG` names are:
-`COPILOT_CLI_VERSION`, `HUNK_VERSION`, `MADO_VERSION`, `NODE_VERSION`,
-`GO_VERSION`, `MAVEN_VERSION`, `JAVA_VERSION` (Eclipse Temurin), and
-`TOFU_VERSION`. The Ubuntu base image is pinned by digest and should be
+`COPILOT_CLI_VERSION`, `HUNK_VERSION`, `MADO_VERSION`, and `ASDF_VERSION`.
+The Ubuntu base image is pinned by digest and should be
 refreshed deliberately when updating the base OS.
 
 ## Licensing
