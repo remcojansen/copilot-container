@@ -209,6 +209,18 @@ pass "--ssh-agent mounts known_hosts and forwards the agent socket over ssh"
 
 rm -f "${SSH_CAPTURE}" "${CAPTURE}"
 
+# Test that the host's TERM_PROGRAM/TERM_PROGRAM_VERSION are forwarded, so
+# Copilot CLI's hyperlink detection still recognizes the host terminal.
+env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CAPTURE="${SSH_CAPTURE}" \
+    PATH="${FAKE_BIN}:${PATH}" TERM_PROGRAM="ghostty" TERM_PROGRAM_VERSION="1.2.3" \
+    "${LAUNCHER}" -m "${PROJECT}" >/dev/null
+
+grep -Fq "TERM_PROGRAM=ghostty" "${SSH_CAPTURE}" || fail "TERM_PROGRAM was not forwarded over ssh"
+grep -Fq "TERM_PROGRAM_VERSION=1.2.3" "${SSH_CAPTURE}" || fail "TERM_PROGRAM_VERSION was not forwarded over ssh"
+pass "TERM_PROGRAM/TERM_PROGRAM_VERSION are forwarded to the remote session"
+
+rm -f "${SSH_CAPTURE}" "${CAPTURE}"
+
 # Test .tool-versions prompt: pending tools reported + "y" installs them
 ASDF_SCRIPT="${ROOT_DIR}/lib/asdf-provision.sh"
 printf '%s\n' 'nodejs 20.11.0' > "${PROJECT}/.tool-versions"

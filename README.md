@@ -86,10 +86,14 @@ build`.
    `copilot` invocation for that run only (nothing is written to the image
    or the persistent volume). Falls back to `gh auth token` if `GH_TOKEN`
    is unset but `gh` is authenticated.
-8. With `--hunk-agent`, mounts Hunk's host runtime state read-only and
+8. Forwards `TERM_PROGRAM`/`TERM_PROGRAM_VERSION` from your host shell so
+   Copilot CLI's hyperlink support detection still recognizes terminals
+   like Ghostty, iTerm2, WezTerm, or VS Code inside the SSH session —
+   otherwise links render styled but aren't clickable.
+9. With `--hunk-agent`, mounts Hunk's host runtime state read-only and
    forwards its loopback-only broker over SSH so tools inside the container
    can control host-side Hunk sessions.
-9. Starts the container **detached**, then connects in over a narrowly-scoped,
+10. Starts the container **detached**, then connects in over a narrowly-scoped,
    loopback-only SSH session (fresh single-use keypair, torn down with the
    container) to run `copilot` as the aligned runtime user, forwarding any
    args you passed after `--`. This SSH bridge is also what
