@@ -91,6 +91,8 @@ RUN set -eux; \
     grep " hunkdiff-linux-${HUNK_ARCH}.tar.gz\$" SHA256SUMS | sha256sum -c -; \
     tar -xzf "hunkdiff-linux-${HUNK_ARCH}.tar.gz" --strip-components=1; \
     install -m 0755 hunk /usr/local/bin/hunk; \
+    mkdir -p /usr/local/bin/skills; \
+    cp -r skills/. /usr/local/bin/skills/; \
     cd /; rm -rf "${workdir}"
 
 # ---- Copilot CLI (pinned) - no apt package upstream, so verify the

@@ -62,6 +62,12 @@ fi
 # so just clear the lock; this doesn't grant password login on its own.
 usermod -p '*' "${RUNTIME_USER}"
 
+# --- Expose the bundled Hunk skill to Copilot in every session ----------
+# Symlinked (not copied) so each run picks up whatever skill content
+# ships with the image's installed Hunk version.
+mkdir -p "${RUNTIME_HOME}/.copilot/skills"
+ln -sfn /usr/local/bin/skills/hunk-review "${RUNTIME_HOME}/.copilot/skills/hunk-review"
+
 # --- Seed the writable Copilot config from the read-only host mount -----
 # config.json is bind-mounted read-only at .copilot-config-seed.json
 # rather than directly at its final path. Seed a writable copy into place on
