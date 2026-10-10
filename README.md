@@ -231,6 +231,9 @@ installed in the image) plus network reachability to that host daemon,
 which the launcher sets up when `--hunk-agent` is enabled.
 This integration is opt-in: run the launcher with `--hunk-agent` when you want
 Copilot to inspect, navigate, or comment on a live host-side Hunk session.
+The Hunk review skill (`hunk skill path`) is pre-loaded into every session
+(`~/.copilot/skills/hunk-review`), so Copilot already knows the `hunk
+session ...` commands and doesn't need to be told to load it.
 
 To use it:
 
@@ -238,10 +241,9 @@ To use it:
    same repo root you're mounting into the container via `--mount`.
 2. Start Copilot with `--hunk-agent`:
    `copilot-container -m /path/to/repo --hunk-agent`.
-3. Inside the container, verify the agent can see the live session, using
-   the same path you mounted: `hunk session list --repo <path>`.
-4. Ask Copilot to load the Hunk review skill (`hunk skill path`) and use
-   `hunk session ...` commands to navigate/comment as described in
+3. Ask Copilot to review the live session (e.g. "review the Hunk session
+   for this repo") — it will use `hunk session ...` commands to
+   navigate/comment, as described in
    [Hunk's agent workflow docs](https://github.com/modem-dev/hunk/blob/main/docs/agent-workflows.md).
 
 Because `--mount` preserves the host's absolute path inside the container,
