@@ -33,11 +33,13 @@ fi
 # lines are skipped. Only the first version per line is checked (any
 # further fallback versions on the same line are uncommon in practice and
 # `asdf install` installs the whole file regardless of what's reported
-# here).
+# here). "system" and "path:..." are asdf's uninstallable pseudo-versions
+# (use whatever's already on PATH/at a given path) and are never pending.
 pending() {
     while read -r plugin version _; do
         case "${plugin}" in ''|'#'*) continue ;; esac
         [ -z "${version}" ] && continue
+        case "${version}" in system|path:*) continue ;; esac
         if ! asdf plugin list 2>/dev/null | grep -qx "${plugin}"; then
             echo "${plugin} ${version}"
             continue

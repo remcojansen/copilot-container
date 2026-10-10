@@ -301,6 +301,15 @@ grep -Fxq "plugin add golang" "${ASDF_CALLS}" || fail "install did not add the m
 grep -Fxq "install" "${ASDF_CALLS}" || fail "install did not run asdf install"
 pass "asdf-provision install adds missing plugins and runs asdf install"
 
+# "system"/"path:..." are asdf's uninstallable pseudo-versions and must
+# never be reported as pending (they'd otherwise re-prompt every run).
+printf '%s\n' 'nodejs system' 'golang path:/opt/go' > "${ASDF_PROJECT}/.tool-versions"
+system_check_output="$(env PATH="${FAKE_BIN}:${PATH}" PLUGINS_FILE="${PLUGINS_FILE}" \
+    INSTALLED_FILE="${INSTALLED_FILE}" ASDF_CALLS="${ASDF_CALLS}" \
+    bash "${ASDF_SCRIPT}" check "${ASDF_PROJECT}")"
+[ -z "${system_check_output}" ] || fail "check reported 'system'/'path:' pseudo-versions as pending"
+pass "asdf-provision check ignores 'system'/'path:' pseudo-versions"
+
 assert_output_contains "HOST_UID must be a numeric user ID" \
     env HOST_UID=invalid bash "${ENTRYPOINT}"
 pass "invalid runtime UID is rejected"

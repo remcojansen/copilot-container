@@ -114,7 +114,7 @@ copilot-container [-m <path> ...] [options] [-- <copilot CLI args...>]
   --ssh-agent                   Forward host SSH_AUTH_SOCK (ssh-agent) for SSH public-key
                                  auth and SSH commit signing
   --hunk-agent                  Enable agent access to host Hunk live sessions
-  --auto-install-tools           Install pending .tool-versions tools via asdf
+  --auto-install-tools          Install pending .tool-versions tools via asdf
                                  without prompting (for non-interactive runs)
   -h, --help                    Show help
 ```
