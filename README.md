@@ -23,6 +23,9 @@ with [Hunk](https://hunk.dev/) (a host-side terminal diff reviewer).
   forwarded live from the host, nothing copied into the image or volume
 - 🌉 **Locked-down host bridge** — the only path in/out is a single-use,
   loopback-only SSH session; no other host access is exposed
+- 🧰 **Per-project language versions via asdf** — drop a `.tool-versions`
+  file in your project and the exact Node/Go/Python/etc. versions it
+  pins get installed automatically on launch
 
 ## Prerequisites
 
@@ -114,6 +117,8 @@ copilot-container [-m <path> ...] [options] [-- <copilot CLI args...>]
   --ssh-agent                   Forward host SSH_AUTH_SOCK (ssh-agent) for SSH public-key
                                  auth and SSH commit signing
   --hunk-agent                  Enable agent access to host Hunk live sessions
+  --auto-install-tools          Install pending .tool-versions tools via asdf
+                                 without prompting (for non-interactive runs)
   -h, --help                    Show help
 ```
 
@@ -257,13 +262,13 @@ Built from `ubuntu:24.04`, the image includes:
 
 - GitHub Copilot CLI (pinned version, see below)
 - `git`, `gh` (GitHub CLI), `glab` (GitLab CLI)
-- `go`, a JDK (OpenJDK 21), `maven`, `python3`
-- `tofu` (OpenTofu, Terraform-compatible CLI), with `terraform` symlinked to
-  `tofu`
+- `asdf`, for provisioning per-project language/tool versions (Node, Go,
+  Java, Python, Terraform/OpenTofu, ...) on demand — see
+  [Per-project language/tool versions](#per-project-languagetool-versions)
 - Common Unix utilities: `make`, `sed`, `gawk`, `grep`, `ripgrep` (`rg`),
   `vim`, `tar`, `jq`
 - `shellcheck`
-- `markdownlint-cli`
+- `mado` (markdownlint-compatible Markdown linter)
 - `hunk` (CLI client only — see [Hunk integration](#hunk-integration))
 - `openssh-server`, used to accept the launcher's per-run SSH session (see
   [What the launcher does](#what-the-launcher-does) above) — the entrypoint aligns the runtime
@@ -273,36 +278,78 @@ Built from `ubuntu:24.04`, the image includes:
 
 This list is expected to grow — add packages to `Containerfile` as needed.
 
+### Per-project language/tool versions
+
+Language runtimes and project-specific tools (Node, Go, a JDK, Python,
+Terraform/OpenTofu, ...) are deliberately **not** baked into the image.
+Instead, `asdf` is preinstalled and its data directory (`~/.asdf`) lives
+under `/home/copilot`, which is the per-project persistent volume (see
+[What the launcher does](#what-the-launcher-does)) — so once a project's
+tools are provisioned, they persist across runs of that same project,
+without requiring an image rebuild or a shared, one-size-fits-all global
+version. `asdf`'s shims directory is put ahead of the rest of `PATH` for
+this reason.
+
+If the mounted project has a `.tool-versions` file, the launcher checks
+whether any of its pinned plugins/versions aren't installed yet in that
+project's volume, and if so, prompts you before installing/updating them
+via `asdf plugin add`/`asdf install`. Declining just skips provisioning
+for that run — you can still run `asdf plugin add`/`asdf install`
+manually inside the container, or answer "yes" on a later run. Pass
+`--auto-install-tools` to install pending tools automatically instead of
+prompting, e.g. for non-interactive/automated runs.
+
 ### Package installation approach
 
 Packages available in Ubuntu's apt repositories (`git`, `make`, `sed`,
-`gawk`, `grep`, `ripgrep`, `golang-go`, `openjdk-21-jdk-headless`, `maven`,
-`python3`, `vim`, `tar`, `jq`, `shellcheck`, `openssh-server`, `glab`, ...)
-are installed via
-`apt-get`, since they're GPG-signed, mirrored, and get security updates
-automatically. `gh` and Node.js (newer than Ubuntu's packaged version) are
-installed from their own signed apt repositories (maintainer's GPG key +
-sources file), rather than piping an install script to `bash`. OpenTofu is
-installed from its signed apt repository. Copilot CLI is installed via `npm`
-(pinned version, verified by npm's registry integrity hash); Hunk's release
-tarball is checksum-verified against its published `SHA256SUMS`.
+`gawk`, `grep`, `ripgrep`, `vim`, `tar`, `jq`, `shellcheck`,
+`openssh-server`, `glab`, ...) are installed via `apt-get`, since they're
+GPG-signed, mirrored, and get security updates automatically. `gh` is
+installed from its own signed apt repository (maintainer's GPG key + sources
+file), rather than piping an install script to `bash`.
 
-## Updating the pinned Copilot CLI version
+Tools that need an exact pinned version — Copilot CLI, Hunk, `mado` and
+`asdf` — are installed from their official upstream release tarballs,
+each verified against a published checksum, following the same
+download-verify-extract-install pattern. This keeps every pinned tool's
+install on one consistent, auditable pattern instead of a mix of apt repos
+and npm.
 
-The Copilot CLI version is pinned via a build arg, defaulting to a known-good
-version. To bump it:
+### Adding custom apt packages
+
+To add extra Ubuntu apt packages to the image without forking or editing
+`Containerfile`, pass `EXTRA_APT_PACKAGES`:
+
+```sh
+make build EXTRA_APT_PACKAGES="postgresql-client redis-tools"
+```
+
+Or, without `make`:
+
+```sh
+podman build --build-arg EXTRA_APT_PACKAGES="postgresql-client redis-tools" \
+    -t copilot-container .
+```
+
+Packages must be available from Ubuntu's default repos or a repo already
+configured in `Containerfile` (e.g. `gh`'s); a genuinely new third-party
+repo still requires editing `Containerfile` directly, following the `gh`
+block's pattern.
+
+## Updating pinned tool versions
+
+Every pinned tool's version is a build arg with a known-good default. To
+bump one:
 
 ```sh
 podman build --build-arg COPILOT_CLI_VERSION=X.Y.Z -t copilot-container .
 ```
 
-Once you've verified the new version works well, update the default in
-`Containerfile` (`ARG COPILOT_CLI_VERSION=...`).
-
-`HUNK_VERSION`, `NODE_MAJOR`, and `MARKDOWNLINT_CLI_VERSION` can be bumped
-the same way via their respective `--build-arg` options. The Ubuntu base image
-is pinned by digest and should be refreshed deliberately when updating the
-base OS.
+Once you've verified the new version works well, update the corresponding
+default in `Containerfile`. The pinned tools and their `ARG` names are:
+`COPILOT_CLI_VERSION`, `HUNK_VERSION`, `MADO_VERSION`, and `ASDF_VERSION`.
+The Ubuntu base image is pinned by digest and should be
+refreshed deliberately when updating the base OS.
 
 ## Licensing
 

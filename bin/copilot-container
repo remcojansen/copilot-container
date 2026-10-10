@@ -35,6 +35,11 @@
 #                            public-key auth and SSH commit signing.
 #   --hunk-agent             Enable agent access to host Hunk live sessions by
 #                            forwarding Hunk's broker host/runtime state.
+#   --auto-install-tools     If the project has a .tool-versions with pinned
+#                            plugins/versions not yet installed, install them
+#                            via asdf without prompting first. Useful for
+#                            non-interactive/automated runs. Without this
+#                            flag, you're prompted interactively instead.
 #   -h, --help               Show this help and exit
 #
 # Any arguments after `--` are forwarded verbatim to the `copilot` CLI
@@ -132,6 +137,7 @@ GITCONFIG_PATH="${HOME}/.gitconfig"
 GPG_AGENT=0
 SSH_AGENT=0
 HUNK_AGENT=0
+AUTO_INSTALL_TOOLS=0
 MOUNT_ARGS=()
 FORWARD_ARGS=()
 
@@ -140,7 +146,7 @@ FORWARD_ARGS=()
 COPILOT_CONTAINER_POLL_ATTEMPTS="${COPILOT_CONTAINER_POLL_ATTEMPTS:-150}"
 
 usage() {
-    sed -n '2,49p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,54p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 require_option_value() {
@@ -193,6 +199,10 @@ while [ $# -gt 0 ]; do
             ;;
         --hunk-agent)
             HUNK_AGENT=1
+            shift
+            ;;
+        --auto-install-tools)
+            AUTO_INSTALL_TOOLS=1
             shift
             ;;
         -h|--help)
@@ -439,6 +449,32 @@ ssh_common_opts=(
 
 wait_for_ssh_ready "${ssh_common_opts[@]}"
 
+# --- Offer to provision pinned tool versions from .tool-versions --------
+# Only probed/prompted when the primary project actually has one; asdf
+# itself is always present in the image regardless.
+if [ -f "${PRIMARY_HOST_PATH}/.tool-versions" ]; then
+    pending_tools="$(ssh "${ssh_common_opts[@]}" copilot@127.0.0.1 -- \
+        "copilot-container-asdf-provision check $(printf '%q' "${PRIMARY_CONTAINER_PATH}")" \
+        2>/dev/null || true)"
+    if [ -n "${pending_tools}" ]; then
+        echo "copilot-container: pinned tool versions in .tool-versions aren't installed yet:" >&2
+        printf '%s\n' "${pending_tools}" | sed 's/^/  /' >&2
+        install_tools=0
+        if [ "${AUTO_INSTALL_TOOLS}" -eq 1 ]; then
+            echo "copilot-container: --auto-install-tools set, installing without prompting" >&2
+            install_tools=1
+        else
+            reply=""
+            read -r -p "Install/update them now via asdf? [y/N] " reply || true
+            [[ "${reply}" =~ ^[Yy] ]] && install_tools=1
+        fi
+        if [ "${install_tools}" -eq 1 ]; then
+            ssh -t "${ssh_common_opts[@]}" copilot@127.0.0.1 -- \
+                "copilot-container-asdf-provision install $(printf '%q' "${PRIMARY_CONTAINER_PATH}")"
+        fi
+    fi
+fi
+
 ssh_forward_flags=()
 if [ "${GPG_AGENT}" -eq 1 ]; then
     ssh_forward_flags+=(-R "${BRIDGE_DIR}/S.gpg-agent:${gpg_socket}")
@@ -459,6 +495,11 @@ fi
 # sshd's own SetEnv has its own parsing gotchas (e.g. with `#`). %q-quoting
 # every piece here and passing it as one argv element sidesteps both.
 remote_cmd="cd $(printf '%q' "${PRIMARY_CONTAINER_PATH}")"
+# Prepend asdf's shims dir so per-project pinned tool versions (see the
+# .tool-versions prompt above) take priority; asdf only ever creates a
+# shim for a plugin the project has actually opted into, so this has no
+# effect until then.
+remote_cmd+=" && export PATH=/home/copilot/.asdf/shims:\${PATH}"
 for kv in "${REMOTE_ENV_VARS[@]+"${REMOTE_ENV_VARS[@]}"}"; do
     name="${kv%%=*}"
     value="${kv#*=}"
