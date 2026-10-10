@@ -313,6 +313,20 @@ grep -Fxq "plugin add golang" "${ASDF_CALLS}" || fail "install did not add the m
 grep -Fxq "install" "${ASDF_CALLS}" || fail "install did not run asdf install"
 pass "asdf-provision install adds missing plugins and runs asdf install"
 
+# `asdf list` prefixes the version selected by the project's own
+# .tool-versions (which is always the pinned one, since `check`/`install`
+# cd into the project dir first) with "*". The pending check must still
+# recognize it as installed instead of re-prompting every run.
+printf '%s\n' 'nodejs 20.11.0' > "${ASDF_PROJECT}/.tool-versions"
+printf '%s\n' 'nodejs' > "${PLUGINS_FILE}"
+printf '%s\n' 'nodejs *20.11.0' > "${INSTALLED_FILE}"
+starred_check_output="$(env PATH="${FAKE_BIN}:${PATH}" PLUGINS_FILE="${PLUGINS_FILE}" \
+    INSTALLED_FILE="${INSTALLED_FILE}" ASDF_CALLS="${ASDF_CALLS}" \
+    bash "${ASDF_SCRIPT}" check "${ASDF_PROJECT}")"
+[ -z "${starred_check_output}" ] ||
+    fail "check reported a '*'-marked already-installed version as pending"
+pass "asdf-provision check isn't fooled by asdf's '*' marker for the selected version"
+
 # "system"/"path:..." are asdf's uninstallable pseudo-versions and must
 # never be reported as pending (they'd otherwise re-prompt every run).
 printf '%s\n' 'nodejs system' 'golang path:/opt/go' > "${ASDF_PROJECT}/.tool-versions"

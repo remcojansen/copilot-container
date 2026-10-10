@@ -39,12 +39,22 @@ pending() {
     while read -r plugin version _; do
         case "${plugin}" in ''|'#'*) continue ;; esac
         [ -z "${version}" ] && continue
+        # Strip a trailing \r so CRLF-saved .tool-versions files (e.g.
+        # edited on Windows) don't make an already-installed version look
+        # pending: `read` keeps a trailing \r attached to the last field
+        # since it isn't IFS whitespace, which then fails the exact-match
+        # check against asdf's (CR-free) output below.
+        version="${version%$'\r'}"
         case "${version}" in system|path:*) continue ;; esac
         if ! asdf plugin list 2>/dev/null | grep -qx "${plugin}"; then
             echo "${plugin} ${version}"
             continue
         fi
-        if ! asdf list "${plugin}" 2>/dev/null | tr -d ' ' | grep -qx "${version}"; then
+        # Strip spaces *and* asdf's leading "*" (its marker for the
+        # version currently selected per this project's .tool-versions,
+        # which `asdf list` always applies here since we've already cd'd
+        # into the project dir) before the exact-match comparison below.
+        if ! asdf list "${plugin}" 2>/dev/null | tr -d ' *' | grep -qx "${version}"; then
             echo "${plugin} ${version}"
         fi
     done < .tool-versions
