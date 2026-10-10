@@ -315,7 +315,13 @@ and npm.
 ### Adding custom apt packages
 
 To add extra Ubuntu apt packages to the image without forking or editing
-`Containerfile`, pass `EXTRA_APT_PACKAGES` as a build arg:
+`Containerfile`, pass `EXTRA_APT_PACKAGES`:
+
+```sh
+make build EXTRA_APT_PACKAGES="postgresql-client redis-tools"
+```
+
+Or, without `make`:
 
 ```sh
 podman build --build-arg EXTRA_APT_PACKAGES="postgresql-client redis-tools" \

@@ -2,6 +2,7 @@ IMAGE      ?= copilot-container
 PREFIX     ?= /usr/local
 BINDIR     := $(PREFIX)/bin
 ENGINE     ?= $(shell if command -v podman >/dev/null 2>&1; then echo podman; elif command -v docker >/dev/null 2>&1; then echo docker; fi)
+EXTRA_APT_PACKAGES ?=
 
 # Auto-elevate install/uninstall with sudo when $(BINDIR) (or its nearest
 # existing ancestor) isn't writable by the current user — e.g. the default
@@ -30,9 +31,10 @@ help:
 	@echo ""
 	@echo "Override with e.g. 'make install PREFIX=$$HOME/.local' or 'make build ENGINE=docker'"
 	@echo "install/uninstall auto-use sudo when $(BINDIR) isn't writable; set SUDO= to disable"
+	@echo "build EXTRA_APT_PACKAGES=\"pkg1 pkg2\" installs extra apt packages into the image"
 
 build: validate-engine
-	$(ENGINE) build -t $(IMAGE) .
+	$(ENGINE) build $(if $(EXTRA_APT_PACKAGES),--build-arg EXTRA_APT_PACKAGES="$(EXTRA_APT_PACKAGES)") -t $(IMAGE) .
 
 install:
 	$(SUDO) install -d "$(BINDIR)"
