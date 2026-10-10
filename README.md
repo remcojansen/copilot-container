@@ -114,6 +114,8 @@ copilot-container [-m <path> ...] [options] [-- <copilot CLI args...>]
   --ssh-agent                   Forward host SSH_AUTH_SOCK (ssh-agent) for SSH public-key
                                  auth and SSH commit signing
   --hunk-agent                  Enable agent access to host Hunk live sessions
+  --auto-install-tools           Install pending .tool-versions tools via asdf
+                                 without prompting (for non-interactive runs)
   -h, --help                    Show help
 ```
 
@@ -279,12 +281,21 @@ Language runtimes and project-specific tools (Node, Go, a JDK, Python,
 Terraform/OpenTofu, ...) are deliberately **not** baked into the image.
 Instead, `asdf` is preinstalled and its data directory (`~/.asdf`) lives
 under `/home/copilot`, which is the per-project persistent volume (see
-[What the launcher does](#what-the-launcher-does)) — so once you
-`asdf plugin add`/`asdf install` what a project needs, it's provisioned
-just once and persists across runs of that same project, without
-requiring an image rebuild or a shared, one-size-fits-all global version.
-`asdf`'s shims directory is put ahead of the rest of `PATH` for this
-reason.
+[What the launcher does](#what-the-launcher-does)) — so once a project's
+tools are provisioned, they persist across runs of that same project,
+without requiring an image rebuild or a shared, one-size-fits-all global
+version. `asdf`'s shims directory is put ahead of the rest of `PATH` for
+this reason.
+
+If the mounted project has a `.tool-versions` file, the launcher checks
+whether any of its pinned plugins/versions aren't installed yet in that
+project's volume, and if so, prompts you before installing/updating them
+via `asdf plugin add`/`asdf install`. Declining just skips provisioning
+for that run — you can still run `asdf plugin add`/`asdf install`
+manually inside the container, or answer "yes" on a later run. Pass
+`--auto-install-tools` to install pending tools automatically instead of
+prompting, e.g. for non-interactive/automated runs.
+manually inside the container, or answer "yes" on a later run.
 
 ### Package installation approach
 

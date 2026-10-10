@@ -117,8 +117,9 @@ RUN set -eux; \
 #      file), so verify against that instead. Provisions everything
 #      project-specific (Node, Go, Java, Python, Terraform/OpenTofu, ...)
 #      on demand into the per-project persistent volume at ~/.asdf, rather
-#      than baking one global version of each into the image (see the
-#      first-run setup script for how this gets triggered). --------------
+#      than baking one global version of each into the image (see
+#      lib/asdf-provision.sh, run by the host launcher over SSH, for how
+#      this gets triggered). --------------------------------------------
 RUN set -eux; \
     workdir="$(mktemp -d)"; \
     cd "${workdir}"; \
@@ -134,6 +135,12 @@ RUN rm -f /etc/copilot-container-arch.env
 # ---- Entrypoint ------------------------------------------------------------
 COPY lib/entrypoint.sh /usr/local/bin/copilot-container-entrypoint
 RUN chmod +x /usr/local/bin/copilot-container-entrypoint
+
+# Helper the host launcher invokes over SSH to detect and install a
+# project's pinned tool versions from its .tool-versions file (see
+# lib/asdf-provision.sh).
+COPY lib/asdf-provision.sh /usr/local/bin/copilot-container-asdf-provision
+RUN chmod +x /usr/local/bin/copilot-container-asdf-provision
 
 # sshd config for the host<->container SSH link (see lib/sshd-config).
 # Replaces Ubuntu's default sshd_config outright: this image never runs a

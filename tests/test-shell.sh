@@ -207,6 +207,100 @@ ssh_auth_sock_line="$(grep -nFq "SSH_AUTH_SOCK=" "${SSH_CAPTURE}" && echo yes ||
 [ -n "${ssh_auth_sock_line}" ] || fail "--ssh-agent did not export SSH_AUTH_SOCK in the remote command"
 pass "--ssh-agent mounts known_hosts and forwards the agent socket over ssh"
 
+rm -f "${SSH_CAPTURE}" "${CAPTURE}"
+
+# Test .tool-versions prompt: pending tools reported + "y" installs them
+ASDF_SCRIPT="${ROOT_DIR}/lib/asdf-provision.sh"
+printf '%s\n' 'nodejs 20.11.0' > "${PROJECT}/.tool-versions"
+SSH_CALLS="${TEST_DIR}/ssh-calls"
+rm -f "${SSH_CALLS}"
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'for a in "$@"; do' \
+    '  if [ "${a}" = "BatchMode=yes" ]; then exit 0; fi' \
+    'done' \
+    'printf "%s\n" "$*" >> "${SSH_CALLS}"' \
+    'case "$*" in' \
+    '  *"asdf-provision check"*) echo "nodejs 20.11.0" ;;' \
+    'esac' \
+    'exit 0' > "${FAKE_BIN}/ssh"
+chmod 755 "${FAKE_BIN}/ssh"
+
+printf 'y\n' | env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CALLS="${SSH_CALLS}" \
+    PATH="${FAKE_BIN}:${PATH}" "${LAUNCHER}" -m "${PROJECT}" >/dev/null
+
+grep -Fq "asdf-provision check" "${SSH_CALLS}" || fail ".tool-versions present did not trigger a pending-tools check"
+grep -Fq "asdf-provision install" "${SSH_CALLS}" || fail "answering 'y' did not trigger asdf install"
+pass ".tool-versions prompt checks pending tools and installs them on 'y'"
+
+rm -f "${SSH_CALLS}"
+printf 'n\n' | env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CALLS="${SSH_CALLS}" \
+    PATH="${FAKE_BIN}:${PATH}" "${LAUNCHER}" -m "${PROJECT}" >/dev/null
+
+grep -Fq "asdf-provision check" "${SSH_CALLS}" || fail ".tool-versions present did not trigger a pending-tools check"
+! grep -Fq "asdf-provision install" "${SSH_CALLS}" || fail "answering 'n' should not trigger asdf install"
+pass ".tool-versions prompt skips installing when declined"
+
+rm -f "${SSH_CALLS}"
+
+# --auto-install-tools skips the prompt and installs without stdin input
+auto_install_output="$(env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CALLS="${SSH_CALLS}" \
+    PATH="${FAKE_BIN}:${PATH}" "${LAUNCHER}" -m "${PROJECT}" --auto-install-tools </dev/null 2>&1 >/dev/null)"
+
+grep -Fq "asdf-provision check" "${SSH_CALLS}" || fail "--auto-install-tools did not trigger a pending-tools check"
+grep -Fq "asdf-provision install" "${SSH_CALLS}" || fail "--auto-install-tools did not install without prompting"
+printf '%s\n' "${auto_install_output}" | grep -Fq "installing without prompting" ||
+    fail "--auto-install-tools did not report that it is installing automatically"
+pass "--auto-install-tools installs pending tools without prompting"
+
+rm -f "${SSH_CALLS}" "${PROJECT}/.tool-versions"
+
+# Unit-test the in-container helper script directly against a fake asdf
+ASDF_PROJECT="${TEST_DIR}/asdf-project"
+mkdir -p "${ASDF_PROJECT}"
+printf '%s\n' 'nodejs 20.11.0' 'golang 1.22.1' > "${ASDF_PROJECT}/.tool-versions"
+FAKE_ASDF_HOME="${TEST_DIR}/asdf-home"
+mkdir -p "${FAKE_ASDF_HOME}"
+PLUGINS_FILE="${FAKE_ASDF_HOME}/plugins"
+INSTALLED_FILE="${FAKE_ASDF_HOME}/installed"
+: > "${PLUGINS_FILE}"
+printf '%s\n' 'nodejs 20.11.0' > "${INSTALLED_FILE}"
+ASDF_CALLS="${TEST_DIR}/asdf-calls"
+: > "${ASDF_CALLS}"
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'echo "$*" >> "${ASDF_CALLS}"' \
+    'case "$1" in' \
+    '  plugin)' \
+    '    case "$2" in' \
+    '      list) cat "${PLUGINS_FILE}" ;;' \
+    '      add) echo "$3" >> "${PLUGINS_FILE}" ;;' \
+    '    esac' \
+    '    ;;' \
+    '  list)' \
+    '    grep "^$2 " "${INSTALLED_FILE}" | cut -d" " -f2 ;;' \
+    '  install) echo installed >> "${INSTALLED_FILE}" ;;' \
+    'esac' \
+    'exit 0' > "${FAKE_BIN}/asdf"
+chmod 755 "${FAKE_BIN}/asdf"
+printf '%s\n' 'nodejs' > "${PLUGINS_FILE}"
+
+check_output="$(env PATH="${FAKE_BIN}:${PATH}" PLUGINS_FILE="${PLUGINS_FILE}" \
+    INSTALLED_FILE="${INSTALLED_FILE}" ASDF_CALLS="${ASDF_CALLS}" \
+    bash "${ASDF_SCRIPT}" check "${ASDF_PROJECT}")"
+printf '%s\n' "${check_output}" | grep -Fxq "golang 1.22.1" ||
+    fail "check did not report the plugin that needs adding/installing"
+! printf '%s\n' "${check_output}" | grep -Fxq "nodejs 20.11.0" ||
+    fail "check reported an already-installed tool as pending"
+pass "asdf-provision check reports only missing plugins/versions"
+
+env PATH="${FAKE_BIN}:${PATH}" PLUGINS_FILE="${PLUGINS_FILE}" \
+    INSTALLED_FILE="${INSTALLED_FILE}" ASDF_CALLS="${ASDF_CALLS}" \
+    bash "${ASDF_SCRIPT}" install "${ASDF_PROJECT}"
+grep -Fxq "plugin add golang" "${ASDF_CALLS}" || fail "install did not add the missing plugin"
+grep -Fxq "install" "${ASDF_CALLS}" || fail "install did not run asdf install"
+pass "asdf-provision install adds missing plugins and runs asdf install"
+
 assert_output_contains "HOST_UID must be a numeric user ID" \
     env HOST_UID=invalid bash "${ENTRYPOINT}"
 pass "invalid runtime UID is rejected"
