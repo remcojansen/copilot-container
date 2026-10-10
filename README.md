@@ -23,6 +23,9 @@ with [Hunk](https://hunk.dev/) (a host-side terminal diff reviewer).
   forwarded live from the host, nothing copied into the image or volume
 - 🌉 **Locked-down host bridge** — the only path in/out is a single-use,
   loopback-only SSH session; no other host access is exposed
+- 🧰 **Per-project language versions via asdf** — drop a `.tool-versions`
+  file in your project and the exact Node/Go/Python/etc. versions it
+  pins get installed automatically on launch
 
 ## Prerequisites
 
