@@ -295,7 +295,6 @@ for that run — you can still run `asdf plugin add`/`asdf install`
 manually inside the container, or answer "yes" on a later run. Pass
 `--auto-install-tools` to install pending tools automatically instead of
 prompting, e.g. for non-interactive/automated runs.
-manually inside the container, or answer "yes" on a later run.
 
 ### Package installation approach
 
@@ -312,6 +311,21 @@ each verified against a published checksum, following the same
 download-verify-extract-install pattern. This keeps every pinned tool's
 install on one consistent, auditable pattern instead of a mix of apt repos
 and npm.
+
+### Adding custom apt packages
+
+To add extra Ubuntu apt packages to the image without forking or editing
+`Containerfile`, pass `EXTRA_APT_PACKAGES` as a build arg:
+
+```sh
+podman build --build-arg EXTRA_APT_PACKAGES="postgresql-client redis-tools" \
+    -t copilot-container .
+```
+
+Packages must be available from Ubuntu's default repos or a repo already
+configured in `Containerfile` (e.g. `gh`'s); a genuinely new third-party
+repo still requires editing `Containerfile` directly, following the `gh`
+block's pattern.
 
 ## Updating pinned tool versions
 

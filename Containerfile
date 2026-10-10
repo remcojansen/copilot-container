@@ -13,6 +13,10 @@
 #
 # Bump the pinned Copilot CLI version:
 #   podman build --build-arg COPILOT_CLI_VERSION=X.Y.Z -t copilot-container .
+#
+# Install extra apt packages without editing this file:
+#   podman build --build-arg EXTRA_APT_PACKAGES="postgresql-client redis-tools" \
+#       -t copilot-container .
 
 FROM ubuntu:24.04@sha256:224a1869083a311ef3f13648a154ba79832fbef6364d31493642ca03082da254
 
@@ -21,6 +25,15 @@ ARG COPILOT_CLI_VERSION=1.0.88
 ARG HUNK_VERSION=0.22.0
 ARG MADO_VERSION=0.3.2
 ARG ASDF_VERSION=0.20.2
+
+# Extra Ubuntu apt packages to install alongside the base toolchain below,
+# without editing this file — e.g.:
+#   podman build --build-arg EXTRA_APT_PACKAGES="postgresql-client redis-tools" \
+#       -t copilot-container .
+# Must be available from Ubuntu's default repos or a repo already
+# configured below (e.g. gh's); a genuinely new third-party repo still
+# requires editing this file directly, following the gh block's pattern.
+ARG EXTRA_APT_PACKAGES=""
 
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
@@ -43,15 +56,17 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 # ---- Base OS packages + common dev toolchain (single update+install) ----
 # Language/tool runtimes (Node, Go, Java, Python, Terraform/OpenTofu, ...)
 # are deliberately not installed here: they're provisioned per-project via
-# asdf (see below and the first-run setup script), so each project pins
+# asdf (see below and lib/asdf-provision.sh), so each project pins
 # exactly the versions it needs instead of sharing one global version baked
-# into the image.
+# into the image. EXTRA_APT_PACKAGES (see above) is appended last so
+# custom packages install in this same pass.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git make sed gawk grep ripgrep \
         unzip xz-utils tar less nano vim \
         jq shellcheck \
         glab openssh-server \
         gh \
+        ${EXTRA_APT_PACKAGES} \
     && rm -rf /var/lib/apt/lists/*
 
 # ---- Resolve the target architecture once for the binary installs below.
