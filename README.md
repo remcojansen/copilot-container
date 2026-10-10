@@ -342,6 +342,16 @@ configured in `Containerfile` (e.g. `gh`'s); a genuinely new third-party
 repo still requires editing `Containerfile` directly, following the `gh`
 block's pattern.
 
+For example, asdf's Python plugin (`python-build`) compiles CPython from
+source, so it needs a compiler and the usual CPython build dependencies,
+none of which are in the base image:
+
+```sh
+make build EXTRA_APT_PACKAGES="build-essential libssl-dev zlib1g-dev \
+    libbz2-dev libreadline-dev libsqlite3-dev libncurses-dev libffi-dev \
+    liblzma-dev tk-dev libxml2-dev libxmlsec1-dev"
+```
+
 ## Updating pinned tool versions
 
 Every pinned tool's version is a build arg with a known-good default. To
