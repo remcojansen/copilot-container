@@ -237,6 +237,18 @@ BRIDGE_DIR="/home/copilot/.copilot-container-bridge"
 GPG_FLAGS=()
 SSH_FLAGS=()
 REMOTE_ENV_VARS=()
+
+# Forward the host terminal's identity so Copilot CLI's hyperlink support
+# detection (which keys off these vars) still recognizes terminals like
+# Ghostty/iTerm2/WezTerm/VS Code inside the SSH session; otherwise links
+# render styled but non-clickable, since SSH doesn't forward them itself.
+if [ -n "${TERM_PROGRAM:-}" ]; then
+    REMOTE_ENV_VARS+=("TERM_PROGRAM=${TERM_PROGRAM}")
+fi
+if [ -n "${TERM_PROGRAM_VERSION:-}" ]; then
+    REMOTE_ENV_VARS+=("TERM_PROGRAM_VERSION=${TERM_PROGRAM_VERSION}")
+fi
+
 gpg_socket=""
 if [ "${GPG_AGENT}" -eq 1 ]; then
     gpg_socket="$(gpgconf --list-dirs agent-socket 2>/dev/null || echo "${HOME}/.gnupg/S.gpg-agent")"
