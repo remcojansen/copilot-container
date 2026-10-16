@@ -11,6 +11,18 @@
 #     connects in over SSH to run the actual Copilot CLI command.
 set -euo pipefail
 
+trap 'printf "error: copilot-container: entrypoint failed at line %s (status %s)\n" "${LINENO}" "$?" >&2' ERR
+
+if [ "${COPILOT_CONTAINER_DEBUG:-0}" = 1 ]; then
+    trap 'echo "copilot-container: entrypoint exited (status $?); keeping debug container running for inspection" >&2; exec sleep infinity' EXIT
+fi
+
+debug_log() {
+    if [ "${COPILOT_CONTAINER_DEBUG:-0}" = 1 ]; then
+        echo "copilot-container: $*" >&2
+    fi
+}
+
 RUNTIME_USER="copilot"
 RUNTIME_HOME="/home/${RUNTIME_USER}"
 
@@ -32,6 +44,7 @@ esac
 # -m, since it may already be populated by the per-project volume — this
 # also avoids useradd's "already exists"/skel-copy warnings.
 mkdir -p "${RUNTIME_HOME}"
+debug_log "aligning runtime user"
 
 if ! getent group "${HOST_GID}" >/dev/null 2>&1; then
     groupadd -g "${HOST_GID}" "${RUNTIME_USER}"
@@ -50,7 +63,7 @@ if ! id -u "${RUNTIME_USER}" >/dev/null 2>&1; then
             -K UID_MIN=100 -K UID_MAX=60000 -s /bin/bash "${RUNTIME_USER}"
     fi
 else
-    if ! usermod -u "${HOST_UID}" -g "${runtime_group}" "${RUNTIME_USER}" >/dev/null 2>&1; then
+    if ! usermod -u "${HOST_UID}" -g "${runtime_group}" "${RUNTIME_USER}"; then
         echo "error: unable to align ${RUNTIME_USER} with UID ${HOST_UID} and GID ${HOST_GID}" >&2
         exit 1
     fi
@@ -82,6 +95,7 @@ fi
 # cannot be chowned. Exclude those paths while aligning the writable state
 # volume. .ssh and .copilot-container-bridge are excluded too: they're
 # (re)created fresh with correct ownership further below, every run.
+debug_log "aligning ownership under ${RUNTIME_HOME} (including installed asdf tools)"
 find "${RUNTIME_HOME}" -xdev \
     ! -path "${RUNTIME_HOME}/.gitconfig" \
     ! -path "${CONFIG_SEED}" \
@@ -95,6 +109,7 @@ find "${RUNTIME_HOME}" -xdev \
     ! -path "${RUNTIME_HOME}/.hunk" \
     ! -path "${RUNTIME_HOME}/.hunk/*" \
     -exec chown "${HOST_UID}:${HOST_GID}" {} +
+debug_log "ownership alignment complete; configuring SSH"
 
 # --- SSH login for the host launcher -------------------------------------
 # The host launcher always starts this container detached and connects in
@@ -126,4 +141,9 @@ chmod 0600 "${RUNTIME_HOME}/.copilot-container-bridge/gpg.conf"
 ssh-keygen -q -t ed25519 -N "" -f /etc/ssh/copilot_container_host_key <<< y >/dev/null
 mkdir -p /run/sshd
 chmod 0755 /run/sshd
-exec /usr/sbin/sshd -D -e
+debug_log "starting sshd"
+if [ "${COPILOT_CONTAINER_DEBUG:-0}" = 1 ]; then
+    /usr/sbin/sshd -D -e
+else
+    exec /usr/sbin/sshd -D -e
+fi

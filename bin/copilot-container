@@ -40,6 +40,8 @@
 #                            via asdf without prompting first. Useful for
 #                            non-interactive/automated runs. Without this
 #                            flag, you're prompted interactively instead.
+#   --debug                  Stream container logs and keep the container for
+#                            inspection after exit or startup failure.
 #   -h, --help               Show this help and exit
 #
 # Any arguments after `--` are forwarded verbatim to the `copilot` CLI
@@ -138,6 +140,7 @@ GPG_AGENT=0
 SSH_AGENT=0
 HUNK_AGENT=0
 AUTO_INSTALL_TOOLS=0
+DEBUG=0
 MOUNT_ARGS=()
 FORWARD_ARGS=()
 
@@ -146,7 +149,7 @@ FORWARD_ARGS=()
 COPILOT_CONTAINER_POLL_ATTEMPTS="${COPILOT_CONTAINER_POLL_ATTEMPTS:-150}"
 
 usage() {
-    sed -n '2,54p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '/^# Usage:/,/^# Any arguments/{ /^# Any arguments/d; p; }' "$0" | sed 's/^# \{0,1\}//'
 }
 
 require_option_value() {
@@ -203,6 +206,10 @@ while [ $# -gt 0 ]; do
             ;;
         --auto-install-tools)
             AUTO_INSTALL_TOOLS=1
+            shift
+            ;;
+        --debug)
+            DEBUG=1
             shift
             ;;
         -h|--help)
@@ -399,15 +406,40 @@ fi
 # --- Assemble run flags ------------------------------------------------
 CONTAINER_NAME="copilot-container-$$-${RANDOM}"
 BRIDGE_TMP="$(mktemp -d)"
-# Single early trap: covers both normal exit and any failure between here
-# and the final `ssh -t` below. Since this launcher no longer ends via
-# `exec`, this reliably runs after the interactive session finishes too.
-trap 'rm -rf "${BRIDGE_TMP}"; "${ENGINE}" rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true' EXIT
+CONTAINER_STARTED=0
+STARTUP_COMPLETE=0
+LOGS_PID=""
+
+cleanup() {
+    local status=$?
+    trap - EXIT
+    if [ -n "${LOGS_PID}" ]; then
+        kill "${LOGS_PID}" 2>/dev/null || true
+        wait "${LOGS_PID}" 2>/dev/null || true
+    fi
+    rm -rf "${BRIDGE_TMP}"
+    if [ "${DEBUG}" -eq 1 ] && [ "${CONTAINER_STARTED}" -eq 1 ]; then
+        echo "copilot-container: debug container retained: ${CONTAINER_NAME}" >&2
+        printf '  Logs:    %q logs %q\n' "${ENGINE}" "${CONTAINER_NAME}" >&2
+        printf '  Shell:   %q exec -it %q /bin/bash\n' "${ENGINE}" "${CONTAINER_NAME}" >&2
+        printf '  Cleanup: %q rm -f %q\n' "${ENGINE}" "${CONTAINER_NAME}" >&2
+    else
+        if [ "${CONTAINER_STARTED}" -eq 1 ] && [ "${STARTUP_COMPLETE}" -eq 0 ] && [ "${status}" -ne 0 ]; then
+            echo "copilot-container: container startup logs:" >&2
+            if ! "${ENGINE}" logs "${CONTAINER_NAME}" >&2; then
+                echo "error: copilot-container: could not retrieve container logs" >&2
+            fi
+        fi
+        "${ENGINE}" rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+    fi
+    exit "${status}"
+}
+trap cleanup EXIT
 
 generate_bridge_credentials
 
 RUN_FLAGS=(
-    -d --rm
+    -d
     --name "${CONTAINER_NAME}"
     -p "127.0.0.1::2222"
     "${BIND_FLAGS[@]}"
@@ -421,6 +453,9 @@ RUN_FLAGS=(
     -e "HOST_GID=${HOST_GID}"
     -e "AUTHORIZED_KEYS_B64=${AUTHORIZED_KEYS_B64}"
 )
+if [ "${DEBUG}" -eq 1 ]; then
+    RUN_FLAGS+=(-e "COPILOT_CONTAINER_DEBUG=1")
+fi
 
 # Ensure current user's UID and GID are preserved in the container when
 # running rootless Podman (default on most Linux distributions).
@@ -445,6 +480,12 @@ fi
 
 # --- Start the container detached, then connect in over SSH -------------
 "${ENGINE}" run "${RUN_FLAGS[@]}" "${IMAGE}" >/dev/null
+CONTAINER_STARTED=1
+if [ "${DEBUG}" -eq 1 ]; then
+    echo "copilot-container: debugging ${CONTAINER_NAME}" >&2
+    "${ENGINE}" logs -f "${CONTAINER_NAME}" >&2 &
+    LOGS_PID=$!
+fi
 
 bridge_port="$(wait_for_published_port "${ENGINE}" "${CONTAINER_NAME}")"
 
@@ -460,6 +501,7 @@ ssh_common_opts=(
 )
 
 wait_for_ssh_ready "${ssh_common_opts[@]}"
+STARTUP_COMPLETE=1
 
 # --- Offer to provision pinned tool versions from .tool-versions --------
 # Only probed/prompted when the primary project actually has one; asdf

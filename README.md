@@ -123,6 +123,8 @@ copilot-container [-m <path> ...] [options] [-- <copilot CLI args...>]
   --hunk-agent                  Enable agent access to host Hunk live sessions
   --auto-install-tools          Install pending .tool-versions tools via asdf
                                  without prompting (for non-interactive runs)
+  --debug                       Stream container logs and keep the container
+                                 for inspection after exit or startup failure
   -h, --help                    Show help
 ```
 
@@ -151,6 +153,31 @@ Environment variables:
 | `HUNK_MCP_PORT` | Forwarded into the container with `--hunk-agent` if set |
 | `COPILOT_CONTAINER_ENGINE` | Force `podman` or `docker` |
 | `COPILOT_CONTAINER_IMAGE`  | Default image name/tag to run |
+
+## Troubleshooting startup
+
+If startup fails, the launcher prints the container's logs before removing
+it. To stream logs and retain the container for inspection, run:
+
+```sh
+copilot-container --debug -m /path/to/your/project
+```
+
+Debug mode reports startup stages, including the ownership traversal of
+the persistent home directory, which includes any tools installed by asdf.
+It also keeps the container running if the entrypoint or sshd exits, so
+you can inspect it without SSH. The launcher still exits with a failure
+status if SSH cannot connect.
+
+When the launcher exits, it prints commands to read the retained
+container's logs, open a root shell using `podman exec` (or `docker exec`),
+and remove the container. Debug containers are retained even after a
+successful session; remove them when finished. Their project mounts remain
+accessible until removal.
+
+Debug mode does not enable shell tracing or print forwarded tokens.
+Rebuild the image and reinstall the launcher after updating this project
+to use the entrypoint diagnostics and keep-alive behavior.
 
 ## Engine selection
 
