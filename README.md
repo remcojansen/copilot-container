@@ -179,6 +179,9 @@ Debug mode does not enable shell tracing or print forwarded tokens.
 Rebuild the image and reinstall the launcher after updating this project
 to use the entrypoint diagnostics and keep-alive behavior.
 
+The persistent home volume is mounted with `:z` shared SELinux labeling
+so its files remain accessible across container instances on SELinux hosts.
+
 ## Engine selection
 
 Podman is preferred; Docker is used automatically if Podman isn't on your
