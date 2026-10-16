@@ -104,11 +104,11 @@ pass "--hunk-agent fails when host Hunk runtime state is missing"
 HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CAPTURE="${SSH_CAPTURE}" PATH="${FAKE_BIN}:${PATH}" \
     "${LAUNCHER}" -m "${PROJECT}" >/dev/null
 
-home_volume_line="$(grep -nE ':/home/copilot$' "${CAPTURE}" | head -n1 | cut -d: -f1)"
+home_volume_line="$(grep -nE ':/home/copilot:z$' "${CAPTURE}" | head -n1 | cut -d: -f1)"
 config_line="$(grep -nFx "${TEST_DIR}/home/.copilot/config.json:/home/copilot/.copilot-config-seed.json:ro" "${CAPTURE}" | cut -d: -f1)"
 instructions_line="$(grep -nFx "${TEST_DIR}/home/.copilot/copilot-instructions.md:/home/copilot/.copilot/copilot-instructions.md:ro" "${CAPTURE}" | cut -d: -f1)"
 
-[ -n "${home_volume_line}" ] || fail "state volume was not passed to the engine"
+[ -n "${home_volume_line}" ] || fail "state volume was not passed with shared SELinux relabeling (:z)"
 [ -n "${config_line}" ] || fail "read-only Copilot config seed mount was not passed"
 [ -n "${instructions_line}" ] || fail "read-only instructions mount was not passed"
 [ "${home_volume_line}" -lt "${config_line}" ] ||

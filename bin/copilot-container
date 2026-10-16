@@ -443,7 +443,7 @@ RUN_FLAGS=(
     --name "${CONTAINER_NAME}"
     -p "127.0.0.1::2222"
     "${BIND_FLAGS[@]}"
-    -v "${VOLUME_NAME}:/home/copilot"
+    -v "${VOLUME_NAME}:/home/copilot:z"
     "${GIT_FLAGS[@]}"
     "${COPILOT_FLAGS[@]}"
     "${GPG_FLAGS[@]}"
