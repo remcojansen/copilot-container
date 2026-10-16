@@ -56,6 +56,7 @@ CAPTURE="${TEST_DIR}/run-args"
 mkdir -p "${FAKE_BIN}"
 printf '%s\n' \
     '#!/usr/bin/env bash' \
+    'if [ -n "${ENGINE_CALLS:-}" ]; then printf "%s\n" "$*" >> "${ENGINE_CALLS}"; fi' \
     'case "${1:-}" in' \
     '  volume)' \
     '    [ "${2:-}" = inspect ] && exit 1' \
@@ -72,6 +73,11 @@ printf '%s\n' \
     '    exit 0' \
     '    ;;' \
     '  rm)' \
+    '    exit 0' \
+    '    ;;' \
+    '  logs)' \
+    '    echo "test container startup log" >&2' \
+    '    if [ "${2:-}" = "-f" ]; then exec sleep 30; fi' \
     '    exit 0' \
     '    ;;' \
     'esac' \
@@ -340,6 +346,40 @@ assert_output_contains "HOST_UID must be a numeric user ID" \
     env HOST_UID=invalid bash "${ENTRYPOINT}"
 pass "invalid runtime UID is rejected"
 
+# Fail before any system mutation to exercise unexpected entrypoint errors.
+printf '%s\n' '#!/usr/bin/env bash' 'exit 42' > "${FAKE_BIN}/mkdir"
+chmod 755 "${FAKE_BIN}/mkdir"
+entrypoint_status=0
+entrypoint_output="$(env -u COPILOT_CONTAINER_DEBUG HOST_UID=1000 HOST_GID=1000 \
+    PATH="${FAKE_BIN}:${PATH}" bash "${ENTRYPOINT}" 2>&1)" || entrypoint_status=$?
+[ "${entrypoint_status}" -eq 42 ] || fail "entrypoint did not preserve the failing command's exit status"
+printf '%s\n' "${entrypoint_output}" | grep -Fq "entrypoint failed at line" ||
+    fail "entrypoint did not report the failure location"
+pass "entrypoint reports unexpected failures and preserves their exit status"
+
+debug_entrypoint_log="${TEST_DIR}/debug-entrypoint-log"
+# macOS sleep does not support the Linux "infinity" argument.
+printf '%s\n' '#!/usr/bin/env bash' 'exec /bin/sleep 30' > "${FAKE_BIN}/sleep"
+chmod 755 "${FAKE_BIN}/sleep"
+env COPILOT_CONTAINER_DEBUG=1 HOST_UID=1000 HOST_GID=1000 PATH="${FAKE_BIN}:${PATH}" \
+    bash "${ENTRYPOINT}" > "${debug_entrypoint_log}" 2>&1 &
+entrypoint_pid=$!
+for _ in $(seq 1 40); do
+    if grep -Fq "keeping debug container running for inspection" "${debug_entrypoint_log}"; then
+        break
+    fi
+    sleep 0.05
+done
+entrypoint_alive=0
+kill -0 "${entrypoint_pid}" 2>/dev/null && entrypoint_alive=1
+kill "${entrypoint_pid}" 2>/dev/null || true
+wait "${entrypoint_pid}" 2>/dev/null || true
+[ "${entrypoint_alive}" -eq 1 ] || fail "debug entrypoint did not remain alive after failure"
+grep -Fq "entrypoint exited (status 42)" "${debug_entrypoint_log}" ||
+    fail "debug entrypoint did not report the original failure status"
+rm -f "${FAKE_BIN}/mkdir" "${FAKE_BIN}/sleep"
+pass "debug entrypoint stays running after startup failure"
+
 # --- Readiness-timeout diagnostics: a broken/unready sshd should surface
 # the last ssh error, not just a bare "timed out" message.
 printf '%s\n' \
@@ -348,7 +388,8 @@ printf '%s\n' \
     'exit 255' > "${FAKE_BIN}/ssh"
 chmod 755 "${FAKE_BIN}/ssh"
 
-readiness_output="$(HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" \
+ENGINE_CALLS="${TEST_DIR}/engine-calls"
+readiness_output="$(HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" ENGINE_CALLS="${ENGINE_CALLS}" \
     COPILOT_CONTAINER_POLL_ATTEMPTS=2 PATH="${FAKE_BIN}:${PATH}" \
     "${LAUNCHER}" -m "${PROJECT}" 2>&1)" && fail "expected launcher to fail when ssh never becomes ready"
 printf '%s\n' "${readiness_output}" | grep -Fq "timed out waiting for container's sshd to become ready" ||
@@ -356,5 +397,38 @@ printf '%s\n' "${readiness_output}" | grep -Fq "timed out waiting for container'
 printf '%s\n' "${readiness_output}" | grep -Fq "Permission denied (publickey)." ||
     fail "readiness timeout did not surface the last ssh error"
 pass "readiness timeout surfaces the last ssh error instead of a bare timeout"
+printf '%s\n' "${readiness_output}" | grep -Fq "test container startup log" ||
+    fail "startup failure did not print container logs"
+grep -q '^rm -f copilot-container-' "${ENGINE_CALLS}" ||
+    fail "normal startup failure did not remove the container"
+! grep -Fxq -- "--rm" "${CAPTURE}" ||
+    fail "engine auto-removal would discard logs before diagnostics"
+pass "normal startup failure prints container logs before cleanup"
+
+: > "${ENGINE_CALLS}"
+debug_status=0
+debug_output="$(HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" ENGINE_CALLS="${ENGINE_CALLS}" \
+    COPILOT_CONTAINER_POLL_ATTEMPTS=2 PATH="${FAKE_BIN}:${PATH}" \
+    "${LAUNCHER}" --debug -m "${PROJECT}" 2>&1)" || debug_status=$?
+[ "${debug_status}" -ne 0 ] || fail "debug mode hid the SSH startup failure"
+grep -Fxq "COPILOT_CONTAINER_DEBUG=1" "${CAPTURE}" ||
+    fail "debug mode did not enable entrypoint diagnostics"
+! grep -q '^rm ' "${ENGINE_CALLS}" || fail "debug mode removed the container"
+grep -q '^logs -f copilot-container-' "${ENGINE_CALLS}" ||
+    fail "debug mode did not follow container logs"
+printf '%s\n' "${debug_output}" | grep -Fq "test container startup log" ||
+    fail "debug mode did not stream container logs"
+for expected in "debug container retained:" "Logs:" "exec -it" "/bin/bash" "Cleanup:"; do
+    printf '%s\n' "${debug_output}" | grep -Fq "${expected}" ||
+        fail "debug mode did not print inspection instructions: ${expected}"
+done
+pass "debug mode streams logs and retains the failed container with inspection commands"
+
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "${FAKE_BIN}/ssh"
+: > "${ENGINE_CALLS}"
+env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" ENGINE_CALLS="${ENGINE_CALLS}" \
+    PATH="${FAKE_BIN}:${PATH}" "${LAUNCHER}" --debug -m "${PROJECT}" >/dev/null 2>&1
+! grep -q '^rm ' "${ENGINE_CALLS}" || fail "debug mode removed the container after a successful session"
+pass "debug mode also retains the container after a successful session"
 
 echo "All shell tests passed."
