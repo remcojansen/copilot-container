@@ -503,10 +503,11 @@ printf '%s\n' \
     'printf "%s\n" "$*" >> "${SSH_CALLS}"' \
     'case "$*" in' \
     '  *"asdf-provision check"*)' \
+    '    [ "${FAKE_OLD_HELPER:-0}" = 0 ] || { echo "unknown mode" >&2; exit 2; }' \
     '    if [ "${FAKE_ASDF_EMPTY:-0}" = 1 ]; then exit 0; fi' \
     '    if [ "${FAKE_ASDF_MULTI:-0}" = 1 ]; then' \
     '      case "$*" in' \
-    '        *"/workspace/api"*) echo "nodejs 20.11.0" ;;' \
+    '        *"/workspace/api"*) printf "%s\n" "nodejs 20.11.0" "ruby 3.2.0" ;;' \
     '        *"/workspace/web"*) echo "nodejs 22.0.0" ;;' \
     '        *"/workspace/reference"*)' \
     '          [ "${FAKE_CHECK_FAIL:-0}" = 0 ] || { echo "check failed" >&2; exit 42; }' \
@@ -590,7 +591,7 @@ multi_mounts=(
 multi_output="$(printf 'y\n' | env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CALLS="${SSH_CALLS}" \
     FAKE_ASDF_MULTI=1 PATH="${FAKE_BIN}:${PATH}" "${LAUNCHER}" "${multi_mounts[@]}" 2>&1)"
 for project_path in /workspace/api /workspace/web '/workspace/reference\ docs' /workspace/empty; do
-    grep -Fq "asdf-provision check ${project_path}" "${SSH_CALLS}" ||
+    grep -Fq "asdf-provision check-plan ${project_path}" "${SSH_CALLS}" ||
         fail "multi-project check skipped ${project_path}"
 done
 grep -Fq -- "-n -p " "${SSH_CALLS}" || fail "tool checks did not preserve launcher input"
@@ -606,6 +607,9 @@ for version in "nodejs 20.11.0" "nodejs 22.0.0" "golang 1.22.1"; do
     printf '%s\n' "${multi_output}" | grep -Fq "${version}" ||
         fail "multi-project summary omitted ${version}"
 done
+quoted_api_plan="$(printf '%q' $'nodejs 20.11.0\nruby 3.2.0')"
+grep -Fq "asdf-provision install /workspace/api ${quoted_api_plan}" "${SSH_CALLS}" ||
+    fail "multi-project install did not receive the approved tool list"
 pass "one confirmation installs missing tools across writable and read-only mounts"
 
 : > "${SSH_CALLS}"
@@ -652,6 +656,15 @@ assert_output_contains 'could not check tool versions in /workspace/reference\ d
     fail "failed tool check triggered partial installation"
 pass "tool check failures stop before installing anything"
 
+: > "${SSH_CALLS}"
+assert_output_contains "ensure the container image is up to date" \
+    env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CALLS="${SSH_CALLS}" \
+    FAKE_OLD_HELPER=1 PATH="${FAKE_BIN}:${PATH}" \
+    "${LAUNCHER}" "${multi_mounts[@]}" --auto-install-tools
+! grep -Fq "asdf-provision install" "${SSH_CALLS}" ||
+    fail "older helper triggered unsafe broad installation"
+pass "older container images cannot trigger broad installation"
+
 rm -f "${SSH_CALLS}" "${PROJECT}/.tool-versions"
 
 # Unit-test the in-container helper script directly against a fake asdf
@@ -673,12 +686,18 @@ printf '%s\n' \
     '  plugin)' \
     '    case "$2" in' \
     '      list) cat "${PLUGINS_FILE}" ;;' \
-    '      add) echo "$3" >> "${PLUGINS_FILE}" ;;' \
+    '      add) [ "$3" = -- ] && echo "$4" >> "${PLUGINS_FILE}" ;;' \
     '    esac' \
     '    ;;' \
-    '  list)' \
-    '    grep "^$2 " "${INSTALLED_FILE}" | cut -d" " -f2 ;;' \
-    '  install) echo installed >> "${INSTALLED_FILE}" ;;' \
+    '  where)' \
+    '    [ "$2" = -- ] || exit 2' \
+    '    [ "${FAKE_WHERE_ERROR:-0}" = 0 ] || { echo "unexpected asdf error" >&2; exit 1; }' \
+    '    grep -Fxq "$3" "${PLUGINS_FILE}" || { echo "No such plugin: $3" >&2; exit 1; }' \
+    '    grep -Fxq "$3 $4" "${INSTALLED_FILE}" || { echo "Version not installed" >&2; exit 1; }' \
+    '    ;;' \
+    '  install)' \
+    '    [ "${2:-}" = -- ] || exit 2' \
+    '    printf "%s %s\n" "$3" "$4" >> "${INSTALLED_FILE}" ;;' \
     'esac' \
     'exit 0' > "${FAKE_BIN}/asdf"
 chmod 755 "${FAKE_BIN}/asdf"
@@ -686,7 +705,7 @@ printf '%s\n' 'nodejs' > "${PLUGINS_FILE}"
 
 check_output="$(env PATH="${FAKE_BIN}:${PATH}" PLUGINS_FILE="${PLUGINS_FILE}" \
     INSTALLED_FILE="${INSTALLED_FILE}" ASDF_CALLS="${ASDF_CALLS}" \
-    bash "${ASDF_SCRIPT}" check "${ASDF_PROJECT}")"
+    bash "${ASDF_SCRIPT}" check-plan "${ASDF_PROJECT}")"
 printf '%s\n' "${check_output}" | grep -Fxq "golang 1.22.1" ||
     fail "check did not report the plugin that needs adding/installing"
 ! printf '%s\n' "${check_output}" | grep -Fxq "nodejs 20.11.0" ||
@@ -719,26 +738,39 @@ pass "asdf-provision ignores trailing whitespace before CRLF"
 printf '%s\n' 'nodejs 20.11.0' 'golang 1.22.1' > "${ASDF_PROJECT}/.tool-versions"
 pass "asdf-provision checks every installable version on each line"
 
+# Change the file after the check: installation must use the approved list.
+printf '%s\n' 'nodejs 99.0.0' > "${ASDF_PROJECT}/.tool-versions"
 env PATH="${FAKE_BIN}:${PATH}" PLUGINS_FILE="${PLUGINS_FILE}" \
     INSTALLED_FILE="${INSTALLED_FILE}" ASDF_CALLS="${ASDF_CALLS}" \
-    bash "${ASDF_SCRIPT}" install "${ASDF_PROJECT}"
-grep -Fxq "plugin add golang" "${ASDF_CALLS}" || fail "install did not add the missing plugin"
-grep -Fxq "install" "${ASDF_CALLS}" || fail "install did not run asdf install"
-pass "asdf-provision install adds missing plugins and runs asdf install"
+    bash "${ASDF_SCRIPT}" install "${ASDF_PROJECT}" "${check_output}"
+grep -Fxq "plugin add -- golang" "${ASDF_CALLS}" || fail "install did not add the missing plugin"
+grep -Fxq "install -- golang 1.22.1" "${ASDF_CALLS}" || fail "install did not target the approved version"
+! grep -Fq "install -- nodejs 99.0.0" "${ASDF_CALLS}" ||
+    fail "install used an unapproved version from the changed file"
+pass "asdf-provision installs only approved versions"
 
-# `asdf list` prefixes the version selected by the project's own
-# .tool-versions (which is always the pinned one, since `check`/`install`
-# cd into the project dir first) with "*". The pending check must still
-# recognize it as installed instead of re-prompting every run.
 printf '%s\n' 'nodejs 20.11.0' > "${ASDF_PROJECT}/.tool-versions"
 printf '%s\n' 'nodejs' > "${PLUGINS_FILE}"
-printf '%s\n' 'nodejs *20.11.0' > "${INSTALLED_FILE}"
-starred_check_output="$(env PATH="${FAKE_BIN}:${PATH}" PLUGINS_FILE="${PLUGINS_FILE}" \
+printf '%s\n' 'nodejs 20x11x0' > "${INSTALLED_FILE}"
+exact_check_output="$(env PATH="${FAKE_BIN}:${PATH}" PLUGINS_FILE="${PLUGINS_FILE}" \
     INSTALLED_FILE="${INSTALLED_FILE}" ASDF_CALLS="${ASDF_CALLS}" \
     bash "${ASDF_SCRIPT}" check "${ASDF_PROJECT}")"
-[ -z "${starred_check_output}" ] ||
-    fail "check reported a '*'-marked already-installed version as pending"
-pass "asdf-provision check isn't fooled by asdf's '*' marker for the selected version"
+[ "${exact_check_output}" = "nodejs 20.11.0" ] ||
+    fail "check confused a similarly named version with the requested version"
+pass "asdf-provision checks exact versions"
+
+assert_output_contains "asdf could not check" \
+    env PATH="${FAKE_BIN}:${PATH}" PLUGINS_FILE="${PLUGINS_FILE}" \
+    INSTALLED_FILE="${INSTALLED_FILE}" ASDF_CALLS="${ASDF_CALLS}" FAKE_WHERE_ERROR=1 \
+    bash "${ASDF_SCRIPT}" check "${ASDF_PROJECT}"
+pass "asdf-provision reports unexpected asdf errors"
+
+printf '%s\n' 'nodejs latest:20' > "${ASDF_PROJECT}/.tool-versions"
+assert_output_contains "pin a specific version" \
+    env PATH="${FAKE_BIN}:${PATH}" PLUGINS_FILE="${PLUGINS_FILE}" \
+    INSTALLED_FILE="${INSTALLED_FILE}" ASDF_CALLS="${ASDF_CALLS}" \
+    bash "${ASDF_SCRIPT}" check "${ASDF_PROJECT}"
+pass "asdf-provision rejects dynamic latest versions"
 
 # "system"/"path:..." are asdf's uninstallable pseudo-versions and must
 # never be reported as pending (they'd otherwise re-prompt every run).

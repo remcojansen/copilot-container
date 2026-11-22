@@ -593,14 +593,16 @@ STARTUP_COMPLETE=1
 
 # --- Offer to provision pinned tool versions from .tool-versions --------
 pending_projects=()
+pending_versions=()
 for container_path in "${CONTAINER_PATHS[@]}"; do
     if ! pending_tools="$(ssh -n "${ssh_common_opts[@]}" copilot@127.0.0.1 -- \
-        "copilot-container-asdf-provision check $(printf '%q' "${container_path}")")"; then
-        printf 'error: copilot-container: could not check tool versions in %q\n' "${container_path}" >&2
+        "copilot-container-asdf-provision check-plan $(printf '%q' "${container_path}")")"; then
+        printf 'error: copilot-container: could not check tool versions in %q; ensure the container image is up to date\n' "${container_path}" >&2
         exit 1
     fi
     if [ -n "${pending_tools}" ]; then
         pending_projects+=("${container_path}")
+        pending_versions+=("${pending_tools}")
         printf 'copilot-container: missing tools in %q:\n' "${container_path}" >&2
         printf '%s\n' "${pending_tools}" | sed 's/^/  /' >&2
     fi
@@ -617,9 +619,9 @@ if [ "${#pending_projects[@]}" -gt 0 ]; then
         [[ "${reply}" =~ ^[Yy] ]] && install_tools=1
     fi
     if [ "${install_tools}" -eq 1 ]; then
-        for container_path in "${pending_projects[@]}"; do
+        for ((i = 0; i < ${#pending_projects[@]}; i++)); do
             ssh -t "${ssh_common_opts[@]}" copilot@127.0.0.1 -- \
-                "copilot-container-asdf-provision install $(printf '%q' "${container_path}")"
+                "copilot-container-asdf-provision install $(printf '%q' "${pending_projects[i]}") $(printf '%q' "${pending_versions[i]}")"
         done
     fi
 fi
