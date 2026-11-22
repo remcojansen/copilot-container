@@ -23,6 +23,8 @@
 #                            path is used to derive the per-project state
 #                            volume name.
 #   -i, --image <name>       Container image to run (default: copilot-container)
+#   --state-volume <name>    Use this named volume for persistent home state.
+#                            Defaults to a name derived from the first mount.
 #   -e, --engine <podman|docker>
 #                            Force a specific container engine
 #   -g, --gitconfig <path>   Host file to bind-mount read-only as the
@@ -135,6 +137,7 @@ wait_for_ssh_ready() {
 }
 
 IMAGE="${COPILOT_CONTAINER_IMAGE:-copilot-container}"
+STATE_VOLUME=""
 GITCONFIG_PATH="${HOME}/.gitconfig"
 GPG_AGENT=0
 SSH_AGENT=0
@@ -172,6 +175,15 @@ while [ $# -gt 0 ]; do
         -i|--image)
             require_option_value "$1" "${2:-}"
             IMAGE="$2"
+            shift 2
+            ;;
+        --state-volume)
+            require_option_value "$1" "${2:-}"
+            STATE_VOLUME="$2"
+            if [[ ! "${STATE_VOLUME}" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
+                echo "error: --state-volume must start with a letter or digit and contain only letters, digits, underscores, periods, and hyphens" >&2
+                exit 2
+            fi
             shift 2
             ;;
         -e|--engine)
@@ -359,14 +371,15 @@ done
 PRIMARY_HOST_PATH="${HOST_PATHS[0]}"
 PRIMARY_CONTAINER_PATH="${CONTAINER_PATHS[0]}"
 
-# --- Per-project state volume ------------------------------------------
-# Derive a stable, human-legible volume name from the primary project's
-# path: its basename plus a short hash of the full path (to disambiguate
-# same-named projects in different locations).
-project_slug="$(basename "${PRIMARY_HOST_PATH}" | tr -c 'a-zA-Z0-9_.-' '_')"
-path_hash="$(printf '%s' "${PRIMARY_HOST_PATH}" | shasum -a 256 2>/dev/null | cut -c1-10 || \
-             printf '%s' "${PRIMARY_HOST_PATH}" | sha256sum | cut -c1-10)"
-VOLUME_NAME="copilot-container_${project_slug}_${path_hash}"
+# --- Persistent state volume --------------------------------------------
+if [ -n "${STATE_VOLUME}" ]; then
+    VOLUME_NAME="${STATE_VOLUME}"
+else
+    project_slug="$(basename "${PRIMARY_HOST_PATH}" | tr -c 'a-zA-Z0-9_.-' '_')"
+    path_hash="$(printf '%s' "${PRIMARY_HOST_PATH}" | shasum -a 256 2>/dev/null | cut -c1-10 || \
+                 printf '%s' "${PRIMARY_HOST_PATH}" | sha256sum | cut -c1-10)"
+    VOLUME_NAME="copilot-container_${project_slug}_${path_hash}"
+fi
 
 "${ENGINE}" volume inspect "${VOLUME_NAME}" >/dev/null 2>&1 || \
     "${ENGINE}" volume create "${VOLUME_NAME}" >/dev/null
