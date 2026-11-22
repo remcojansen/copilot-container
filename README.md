@@ -67,9 +67,9 @@ build`.
 
 1. Detects your container engine — **Podman first, Docker as fallback** (see
    [Engine selection](#engine-selection) below).
-2. Bind-mounts each `--mount`/`-m` path into the container at the same
+2. Bind-mounts each `--mount`/`-m` or `--mount-ro` path into the container at the same
    absolute path as on the host (unless you give an explicit
-   `host:container` mapping). The *first* `--mount` is the primary project:
+   `host:container` mapping). The first mount of either kind is the primary project:
    the container's working directory, and the source for the default state
    volume name.
 3. Creates/reuses a named volume mounted at the container user's home
@@ -115,12 +115,13 @@ to continue or Ctrl-C to cancel. Non-interactive runs do not pause.
 copilot-container [-m <path> ...] [options] [-- <copilot CLI args...>]
 
   -m, --mount <host_path>[:<container_path>]
-                                 Bind-mount a host directory (repeatable).
-                                 If no --mount/-m is given at all, defaults
-                                 to the current working directory (`pwd`).
-                                 Defaults to the same path in the container
-                                 as on the host. The first --mount is the
-                                 primary project.
+                                 Bind-mount a directory read-write (repeatable).
+  --mount-ro <host_path>[:<container_path>]
+                                 Bind-mount a directory read-only (repeatable).
+                                 Both default to the same container path as the
+                                 host. The first mount is the primary project.
+                                 With no mounts, the current directory is
+                                 mounted read-write.
   -i, --image <name>            Container image to run (default: copilot-container)
   --state-volume <name>         Named volume for persistent home state
                                  (default: derived from the first mount)
@@ -168,6 +169,20 @@ Volume names must start with a letter or digit and contain only letters,
 digits, underscores, periods, and hyphens. The volume is created if needed
 and is not removed when the container exits. Avoid simultaneous launches
 using the same volume: their SSH bridge state can conflict.
+
+Use `--mount-ro` for projects that should not be modified:
+
+```sh
+copilot-container -m /path/to/active-project \
+  --mount-ro /path/to/reference-project \
+  --mount-ro /path/to/docs:/workspace/docs
+```
+
+The first mount can also be read-only; it remains the working directory.
+Commands that need to write to a read-only project will fail. Read-only
+applies to that mount only: the same files may still be writable through
+another mount or forwarded service. Read-only behavior for nested host
+filesystem mounts depends on the container engine and kernel.
 
 Environment variables:
 

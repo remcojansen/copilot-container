@@ -36,6 +36,7 @@ printf '%s\n' '{}' > "${TEST_DIR}/home/.copilot/config.json"
 printf '%s\n' 'instructions' > "${TEST_DIR}/home/.copilot/copilot-instructions.md"
 
 assert_output_contains "-m requires a value" "${LAUNCHER}" -m
+assert_output_contains "--mount-ro requires a value" "${LAUNCHER}" --mount-ro
 pass "missing option values are rejected"
 
 assert_output_contains "--state-volume requires a value" "${LAUNCHER}" --state-volume
@@ -160,6 +161,48 @@ done
 ! grep -Fq $'\033' "${SUMMARY}" || fail "redirected startup summary contains terminal color codes"
 ! grep -Fq "Press Enter" "${SUMMARY}" || fail "non-interactive run prompted to continue"
 pass "startup summary shows effective configuration without secrets"
+
+env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CAPTURE="${SSH_CAPTURE}" PATH="${FAKE_BIN}:${PATH}" \
+    "${LAUNCHER}" --mount-ro "${PROJECT}:/workspace/reference" -m "${SECOND_PROJECT}:/workspace/work" \
+    >/dev/null 2>"${SUMMARY}"
+grep -Fxq "${PROJECT}:/workspace/reference:ro" "${CAPTURE}" ||
+    fail "read-only mount did not include the engine's ro option"
+grep -Fxq "${SECOND_PROJECT}:/workspace/work" "${CAPTURE}" ||
+    fail "read-write mount changed unexpectedly"
+grep -Fq 'Working directory: /workspace/reference' "${SUMMARY}" ||
+    fail "read-only first mount was not the working directory"
+grep -Fq "read-only  ${PROJECT} -> /workspace/reference" "${SUMMARY}" ||
+    fail "summary did not show the read-only project"
+grep -Fq "read-write  ${SECOND_PROJECT} -> /workspace/work" "${SUMMARY}" ||
+    fail "summary did not show the read-write project"
+grep -Fq 'cd /workspace/reference &&' "${SSH_CAPTURE}" ||
+    fail "read-only first mount was not used as the working directory"
+pass "mixed mounts preserve order, access modes and primary directory"
+
+env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CAPTURE="${SSH_CAPTURE}" PATH="${FAKE_BIN}:${PATH}" \
+    "${LAUNCHER}" --mount-ro "${PROJECT}" >/dev/null 2>"${SUMMARY}"
+grep -Fxq "${PROJECT}:${PROJECT}:ro" "${CAPTURE}" ||
+    fail "read-only mount did not default to the host path"
+pass "read-only mount defaults to the host path"
+
+env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CAPTURE="${SSH_CAPTURE}" PATH="${FAKE_BIN}:${PATH}" \
+    "${LAUNCHER}" -m "${PROJECT}" --mount-ro "${SECOND_PROJECT}:/workspace/reference" \
+    >/dev/null 2>"${SUMMARY}"
+grep -Fxq "${SECOND_PROJECT}:/workspace/reference:ro" "${CAPTURE}" ||
+    fail "read-only mount after a writable mount lost its mode"
+grep -Fq "Working directory: ${PROJECT}" "${SUMMARY}" ||
+    fail "read-write first mount was not the working directory"
+pass "read-only mount after a writable mount preserves its mode"
+
+mkdir -p "${PROJECT}/nested"
+env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CAPTURE="${SSH_CAPTURE}" PATH="${FAKE_BIN}:${PATH}" \
+    "${LAUNCHER}" --mount-ro "${PROJECT}:/workspace" -m "${PROJECT}/nested:/workspace/nested" \
+    >/dev/null 2>"${SUMMARY}"
+grep -Fxq "${PROJECT}:/workspace:ro" "${CAPTURE}" ||
+    fail "overlapping read-only mount was not passed through"
+grep -Fxq "${PROJECT}/nested:/workspace/nested" "${CAPTURE}" ||
+    fail "overlapping read-write mount was not passed through"
+pass "overlapping mounts are passed to the container engine"
 
 if command -v script >/dev/null 2>&1 && script --version 2>/dev/null | grep -q 'util-linux'; then
     tty_cmd="$(printf '%q ' "${LAUNCHER}" -m "${PROJECT}")"
