@@ -30,13 +30,14 @@ if [ ! -f .tool-versions ]; then
 fi
 
 pending() {
-    while read -r -a fields || [ "${#fields[@]}" -gt 0 ]; do
+    while IFS= read -r line || [ -n "${line}" ]; do
+        line="${line%%#*}"
+        read -r -a fields <<< "${line}"
         [ "${#fields[@]}" -gt 1 ] || continue
         plugin="${fields[0]}"
-        case "${plugin}" in ''|'#'*) continue ;; esac
         for version in "${fields[@]:1}"; do
             version="${version%$'\r'}"
-            case "${version}" in '#'* ) break ;; ''|system|path:*) continue ;; esac
+            case "${version}" in ''|system|path:*) continue ;; esac
             if ! asdf plugin list 2>/dev/null | grep -qx "${plugin}"; then
                 echo "${plugin} ${version}"
                 continue

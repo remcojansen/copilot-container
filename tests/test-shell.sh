@@ -699,6 +699,15 @@ fallback_check_output="$(env PATH="${FAKE_BIN}:${PATH}" PLUGINS_FILE="${PLUGINS_
     bash "${ASDF_SCRIPT}" check "${ASDF_PROJECT}")"
 [ "${fallback_check_output}" = "nodejs 22.0.0" ] ||
     fail "check did not report only the missing fallback version"
+printf 'nodejs 20.11.0 22.0.0# fallback\n#golang 100\ngolang 1.22.1# comment' \
+    > "${ASDF_PROJECT}/.tool-versions"
+comment_check_output="$(env PATH="${FAKE_BIN}:${PATH}" PLUGINS_FILE="${PLUGINS_FILE}" \
+    INSTALLED_FILE="${INSTALLED_FILE}" ASDF_CALLS="${ASDF_CALLS}" \
+    bash "${ASDF_SCRIPT}" check "${ASDF_PROJECT}")"
+[ "${comment_check_output}" = $'nodejs 22.0.0\ngolang 1.22.1' ] ||
+    fail "check did not strip inline comments before parsing versions"
+pass "asdf-provision strips inline comments before parsing versions"
+
 printf 'nodejs 20.11.0 \r\ngolang 1.22.1 \t \r\n' > "${ASDF_PROJECT}/.tool-versions"
 crlf_check_output="$(env PATH="${FAKE_BIN}:${PATH}" PLUGINS_FILE="${PLUGINS_FILE}" \
     INSTALLED_FILE="${INSTALLED_FILE}" ASDF_CALLS="${ASDF_CALLS}" \
