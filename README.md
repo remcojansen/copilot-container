@@ -1,31 +1,30 @@
 # copilot-container
 
 Run [GitHub Copilot CLI](https://github.com/github/copilot-cli) inside a
-container, smoothly. This project provides a container image with Copilot
-CLI and a common dev toolchain, a launcher script that mounts your project(s)
-and forwards your preferred Copilot CLI flags, container-tuned
-Copilot defaults, personal user-level Copilot instructions, and integration
-with [Hunk](https://hunk.dev/) (a host-side terminal diff reviewer).
+container, smoothly. This project provides a container image with Copilot CLI,
+common utilities, and asdf for installing project-specific tools. The launcher
+mounts your project(s) and forwards your preferred Copilot CLI flags. It also
+supports personal Copilot instructions and integration with [Hunk](https://hunk.dev/)
+(a host-side terminal diff reviewer).
 
 ## Features
 
-- 🛡️ **Contained execution** — Copilot runs isolated in the container, with
-  access limited to exactly the directories you mount; nothing else on your
-  host is reachable
-- 🚫 **No accidental blast radius** — even a destructive/misbehaving command
-  stays scoped to the container's mounts, not your whole filesystem
-- ✅ **Skip the permission fatigue** — the container itself is the sandbox,
-  so you don't need repetitive manual approval prompts to feel safe letting
-  Copilot act
+- 🛡️ **Contained execution** — Copilot runs in a container with access to
+  the directories and integrations you provide
+- 🚫 **Limit filesystem writes** — mount projects read-only when they don't
+  need to be modified
 - 💾 **Persistent state** — Copilot config, permission approvals, and session
   history survive across runs, scoped per project or named volume
 - 🔑 **Seamless auth & commit signing** — GitHub token, GPG/SSH agent all
   forwarded live from the host, nothing copied into the image or volume
-- 🌉 **Locked-down host bridge** — the only path in/out is a single-use,
-  loopback-only SSH session; no other host access is exposed
-- 🧰 **Per-project language versions via asdf** — drop a `.tool-versions`
-  file in your project and the exact Node/Go/Python/etc. versions it
-  pins get installed automatically on launch
+- 🌉 **Host bridge** — a single-use, loopback-only SSH session connects the
+  launcher to the container and forwards selected integrations
+- 🧰 **Per-project language versions via asdf** — install the Node/Go/Python/etc.
+  versions pinned in the primary project's `.tool-versions` on launch
+
+The container has network access; forwarded tokens, agents and integrations
+also grant capabilities beyond mounted files. Review the startup summary and
+Copilot's permission prompts before granting access.
 
 ## Prerequisites
 
@@ -149,9 +148,7 @@ copilot-container \
   --gpg-agent \
   --gitconfig ~/.gitconfig-default \
   -- \
-  --model claude-sonnet-5 \
-  --allow-all-tools \
-  --allow-all-paths
+  --model claude-sonnet-5
 ```
 
 `/path/to/your/first-project` is the primary project (container's working directory, and
@@ -186,6 +183,33 @@ Commands that need to write to a read-only project will fail. Read-only
 applies to that mount only: the same files may still be writable through
 another mount or forwarded service. Read-only behavior for nested host
 filesystem mounts depends on the container engine and kernel.
+
+### Reusable workspaces
+
+Save a function in `~/.zshrc` or `~/.bashrc` to reuse a named volume and
+project mounts:
+
+```sh
+copilot-platform() {
+  copilot-container \
+    --state-volume platform \
+    -m "$HOME/src/api" \
+    -m "$HOME/src/web" \
+    --mount-ro "$HOME/src/docs" \
+    -- --add-dir "$HOME/src/web" "$@"
+}
+```
+
+Replace the example paths with your own, then open a new shell or reload
+your shell configuration. Run `copilot-platform` to start the workspace, or
+pass extra Copilot options, for example `copilot-platform --model claude-sonnet-5`.
+The first mount (`api`) is the starting directory and determines which
+`.tool-versions` file the launcher checks.
+
+Mounting a directory makes it available to the container; `--add-dir`
+separately allows Copilot to access it and trusts its `.github/skills` and
+`.github/agents`. Add it only for projects you trust. The startup summary
+shows mounts but does not show forwarded Copilot options such as `--add-dir`.
 
 Environment variables:
 
@@ -445,7 +469,7 @@ This repository's own code is MIT-licensed (see `LICENSE`). The container
 image also bundles unmodified third-party software — most notably GitHub
 Copilot CLI, redistributed under its own license — alongside the
 functionality this project adds (the launcher, host/container SSH bridge,
-Git/Copilot config wiring, Hunk integration, and the rest of the toolchain).
+Git/Copilot config wiring, and Hunk integration).
 See [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) for the full license
 text and attribution notices for bundled third-party components.
 
