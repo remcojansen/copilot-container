@@ -13,6 +13,9 @@ supports personal Copilot instructions and integration with [Hunk](https://hunk.
   the directories and integrations you provide
 - 🚫 **Limit filesystem writes** — mount projects read-only when they don't
   need to be modified
+- ✅ **More confidence with broad permissions** — Container isolation can
+  reduce the risks of granting Copilot broad permissions. Writable mounts,
+  network access and forwarded credentials remain accessible.
 - 💾 **Persistent state** — Copilot config, permission approvals, and session
   history survive across runs, scoped per project or named volume
 - 🔑 **Seamless auth & commit signing** — GitHub token, GPG/SSH agent all
