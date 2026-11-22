@@ -491,6 +491,51 @@ if [ -n "${GITHUB_TOKEN:-}" ]; then
     REMOTE_ENV_VARS+=("GITHUB_TOKEN=${GITHUB_TOKEN}")
 fi
 
+integration_status() {
+    if [ "$1" -eq 1 ]; then
+        printf '✓ enabled'
+    else
+        printf '%s' '- disabled'
+    fi
+}
+
+summary_color=0
+if [ -t 2 ] && [ -n "${TERM:-}" ] && [ "${TERM}" != "dumb" ] && [ -z "${NO_COLOR:-}" ]; then
+    summary_color=1
+    printf '\033[36m' >&2
+fi
+echo "copilot-container: startup configuration:" >&2
+printf '  Engine: %q\n  Image: %q\n' "${ENGINE}" "${IMAGE}" >&2
+printf '  Working directory: %q\n' "${PRIMARY_CONTAINER_PATH}" >&2
+printf '  State volume: %q -> /home/copilot\n' "${VOLUME_NAME}" >&2
+echo "  Project mounts (read-write):" >&2
+for ((i = 0; i < ${#HOST_PATHS[@]}; i++)); do
+    printf '    %q -> %q\n' "${HOST_PATHS[i]}" "${CONTAINER_PATHS[i]}" >&2
+done
+additional_mounts=("${GIT_FLAGS[@]}" "${COPILOT_FLAGS[@]}" "${GPG_FLAGS[@]}" "${SSH_FLAGS[@]}" "${HUNK_FLAGS[@]}")
+if [ "${#additional_mounts[@]}" -gt 0 ]; then
+    echo "  Additional mounts (engine volume syntax):" >&2
+    for ((i = 1; i < ${#additional_mounts[@]}; i += 2)); do
+        printf '    %q\n' "${additional_mounts[i]}" >&2
+    done
+fi
+printf '  Integrations:\n    %s  GPG agent\n    %s  SSH agent\n    %s  Hunk\n' \
+    "$(integration_status "${GPG_AGENT}")" \
+    "$(integration_status "${SSH_AGENT}")" \
+    "$(integration_status "${HUNK_AGENT}")" >&2
+if [ -n "${GH_TOKEN:-}" ] || [ -n "${GITHUB_TOKEN:-}" ]; then
+    echo "  GitHub token: available" >&2
+else
+    echo "  GitHub token: not available" >&2
+fi
+if [ "${summary_color}" -eq 1 ]; then
+    printf '\033[0m' >&2
+fi
+if [ -t 0 ] && [ -t 2 ]; then
+    printf 'Press Enter to start Copilot (Ctrl-C to cancel)... ' >&2
+    IFS= read -r || exit 1
+fi
+
 # --- Start the container detached, then connect in over SSH -------------
 "${ENGINE}" run "${RUN_FLAGS[@]}" "${IMAGE}" >/dev/null
 CONTAINER_STARTED=1

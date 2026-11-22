@@ -139,12 +139,82 @@ pass "launcher always connects in over ssh to run copilot"
 
 rm -f "${SSH_CAPTURE}" "${CAPTURE}"
 
+SUMMARY="${TEST_DIR}/startup-summary"
+SECOND_PROJECT="${TEST_DIR}/second-project"
+mkdir -p "${SECOND_PROJECT}"
+env HOME="${TEST_DIR}/home" GH_TOKEN="test-secret-token" CAPTURE="${CAPTURE}" \
+    SSH_CAPTURE="${SSH_CAPTURE}" PATH="${FAKE_BIN}:${PATH}" \
+    "${LAUNCHER}" -m "${PROJECT}" -m "${SECOND_PROJECT}:/workspace/other" \
+    -- --model test-secret-argument >/dev/null 2>"${SUMMARY}"
+
+for expected in \
+    "Engine: podman" "Image: copilot-container" "Working directory: ${PROJECT}" \
+    "State volume: copilot-container_" "${PROJECT} -> ${PROJECT}" \
+    "${SECOND_PROJECT} -> /workspace/other" \
+    "${TEST_DIR}/home/.gitconfig:/home/copilot/.gitconfig:ro" \
+    "- disabled  GPG agent" "- disabled  SSH agent" "- disabled  Hunk" "GitHub token: available"; do
+    grep -Fq -- "${expected}" "${SUMMARY}" || fail "startup summary did not show: ${expected}"
+done
+! grep -Fq "test-secret-token" "${SUMMARY}" || fail "startup summary exposed the GitHub token"
+! grep -Fq "test-secret-argument" "${SUMMARY}" || fail "startup summary exposed Copilot arguments"
+! grep -Fq $'\033' "${SUMMARY}" || fail "redirected startup summary contains terminal color codes"
+! grep -Fq "Press Enter" "${SUMMARY}" || fail "non-interactive run prompted to continue"
+pass "startup summary shows effective configuration without secrets"
+
+if command -v script >/dev/null 2>&1 && script --version 2>/dev/null | grep -q 'util-linux'; then
+    tty_cmd="$(printf '%q ' "${LAUNCHER}" -m "${PROJECT}")"
+    tty_output="$(printf 'x\n' | env HOME="${TEST_DIR}/home" TERM=xterm NO_COLOR= CAPTURE="${CAPTURE}" \
+        SSH_CAPTURE="${SSH_CAPTURE}" PATH="${FAKE_BIN}:${PATH}" \
+        script -q -e -c "${tty_cmd}" /dev/null)"
+    [[ "${tty_output}" == *$'\033[36m'* && "${tty_output}" == *$'\033[0m'* ]] ||
+        fail "terminal startup summary did not enable and reset color"
+    [[ "${tty_output}" == *"Press Enter to start Copilot"* ]] ||
+        fail "interactive startup did not prompt to continue"
+    no_color_output="$(printf 'x\n' | env HOME="${TEST_DIR}/home" TERM=xterm NO_COLOR=1 CAPTURE="${CAPTURE}" \
+        SSH_CAPTURE="${SSH_CAPTURE}" PATH="${FAKE_BIN}:${PATH}" \
+        script -q -e -c "${tty_cmd}" /dev/null)"
+    [[ "${no_color_output}" != *$'\033'* ]] || fail "NO_COLOR did not disable terminal color"
+    dumb_output="$(printf 'x\n' | env HOME="${TEST_DIR}/home" TERM=dumb NO_COLOR= CAPTURE="${CAPTURE}" \
+        SSH_CAPTURE="${SSH_CAPTURE}" PATH="${FAKE_BIN}:${PATH}" \
+        script -q -e -c "${tty_cmd}" /dev/null)"
+    [[ "${dumb_output}" != *$'\033'* ]] || fail "dumb terminal received color codes"
+    pass "startup summary uses terminal color and respects NO_COLOR"
+
+    tty_input="${TEST_DIR}/tty-input"
+    tty_log="${TEST_DIR}/tty-log"
+    tty_engine_calls="${TEST_DIR}/tty-engine-calls"
+    : > "${tty_engine_calls}"
+    mkfifo "${tty_input}"
+    exec 9<> "${tty_input}"
+    env HOME="${TEST_DIR}/home" TERM=xterm CAPTURE="${CAPTURE}" SSH_CAPTURE="${SSH_CAPTURE}" \
+        ENGINE_CALLS="${tty_engine_calls}" PATH="${FAKE_BIN}:${PATH}" \
+        script -q -f -e -c "${tty_cmd}" /dev/null < "${tty_input}" > "${tty_log}" 2>&1 &
+    tty_pid=$!
+    for _ in $(seq 1 100); do
+        grep -Fq "Press Enter to start Copilot" "${tty_log}" && break
+        sleep 0.05
+    done
+    if ! grep -Fq "Press Enter to start Copilot" "${tty_log}" ||
+        grep -q '^run ' "${tty_engine_calls}"; then
+        kill "${tty_pid}" 2>/dev/null || true
+        wait "${tty_pid}" 2>/dev/null || true
+        fail "interactive launcher did not wait before starting the container"
+    fi
+    printf '\n' >&9
+    wait "${tty_pid}" || fail "interactive launcher did not continue after Enter"
+    exec 9>&-
+    grep -q '^run ' "${tty_engine_calls}" || fail "Enter did not start the container"
+    pass "interactive startup waits for Enter before starting the container"
+fi
+
+rm -f "${SSH_CAPTURE}" "${CAPTURE}"
+
 # Test --hunk-agent mounts Hunk's runtime state and exports broker settings
 mkdir -p "${TEST_DIR}/home/.hunk/hunk-mcp/security-v1"
 
 env HOME="${TEST_DIR}/home" HUNK_MCP_PORT=56789 CAPTURE="${CAPTURE}" \
     SSH_CAPTURE="${SSH_CAPTURE}" PATH="${FAKE_BIN}:${PATH}" \
-    "${LAUNCHER}" -m "${PROJECT}" --hunk-agent >/dev/null
+    "${LAUNCHER}" -m "${PROJECT}" --hunk-agent >/dev/null 2>"${SUMMARY}"
 
 hunk_runtime_line="$(grep -nFx "${TEST_DIR}/home/.hunk/hunk-mcp:/home/copilot/.hunk/hunk-mcp:ro" "${CAPTURE}" | cut -d: -f1)"
 
@@ -159,6 +229,9 @@ grep -Fq "127.0.0.1:56789:127.0.0.1:56789" "${SSH_CAPTURE}" ||
     fail "--hunk-agent did not tunnel the Hunk broker over SSH"
 grep -Fq "ExitOnForwardFailure=yes" "${SSH_CAPTURE}" ||
     fail "--hunk-agent did not require the Hunk tunnel to be established"
+grep -Fq "✓ enabled  Hunk" "${SUMMARY}" || fail "startup summary did not show enabled Hunk integration"
+grep -Fq "${TEST_DIR}/home/.hunk/hunk-mcp:/home/copilot/.hunk/hunk-mcp:ro" "${SUMMARY}" ||
+    fail "startup summary did not show the Hunk mount"
 pass "--hunk-agent mounts Hunk runtime state and exports broker settings"
 
 rm -f "${SSH_CAPTURE}" "${CAPTURE}"
@@ -269,6 +342,38 @@ printf '%s\n' \
     'exit 0' > "${FAKE_BIN}/ssh"
 chmod 755 "${FAKE_BIN}/ssh"
 
+if command -v script >/dev/null 2>&1 && script --version 2>/dev/null | grep -q 'util-linux'; then
+    : > "${SSH_CALLS}"
+    : > "${tty_log}"
+    exec 9<> "${tty_input}"
+    env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CALLS="${SSH_CALLS}" \
+        PATH="${FAKE_BIN}:${PATH}" script -q -f -e -c "${tty_cmd}" /dev/null \
+        < "${tty_input}" > "${tty_log}" 2>&1 &
+    tty_pid=$!
+    for _ in $(seq 1 100); do
+        grep -Fq "Press Enter to start Copilot" "${tty_log}" && break
+        sleep 0.05
+    done
+    printf 'x\n' >&9
+    for _ in $(seq 1 100); do
+        grep -Fq "Install/update them now via asdf?" "${tty_log}" && break
+        sleep 0.05
+    done
+    if ! grep -Fq "Install/update them now via asdf?" "${tty_log}" ||
+        ! kill -0 "${tty_pid}" 2>/dev/null; then
+        kill "${tty_pid}" 2>/dev/null || true
+        wait "${tty_pid}" 2>/dev/null || true
+        fail "tool-install prompt did not wait for a separate answer"
+    fi
+    printf 'y\n' >&9
+    wait "${tty_pid}" || fail "interactive tool installation failed"
+    exec 9>&-
+    grep -Fq "asdf-provision install" "${SSH_CALLS}" ||
+        fail "interactive tool-install answer was not honored"
+    pass "startup confirmation does not consume the tool-install answer"
+fi
+
+rm -f "${SSH_CALLS}"
 printf 'y\n' | env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CALLS="${SSH_CALLS}" \
     PATH="${FAKE_BIN}:${PATH}" "${LAUNCHER}" -m "${PROJECT}" >/dev/null
 
