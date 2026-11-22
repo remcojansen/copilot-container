@@ -236,11 +236,14 @@ the rest of `PATH` for this reason.
 The launcher checks the top-level `.tool-versions` file of each mounted
 project, including read-only mounts. It lists missing tools by project and
 asks once before installing them into the selected volume via `asdf plugin
-add`/`asdf install`. Declining or running without input skips provisioning
-for that run. You can still install tools manually inside the container,
-or answer "yes" on a later run. Pass `--auto-install-tools` to install
-pending tools for all mounts without prompting. Some tool installations
-may require write access to the project directory.
+add`/`asdf install`. Only the versions listed at startup are installed;
+the launcher does not install unrelated versions from parent or home
+configuration. Declining or running without input skips provisioning for
+that run. You can still install tools manually inside the container, or
+answer "yes" on a later run. Pass `--auto-install-tools` to install pending
+tools for all mounts without prompting. Some tool installations may require
+write access to the project directory. If a missing version is `latest` or
+`latest:<filter>`, the launcher stops and asks you to pin a specific version.
 
 ### Environment variables
 
