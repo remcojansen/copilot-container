@@ -699,6 +699,14 @@ fallback_check_output="$(env PATH="${FAKE_BIN}:${PATH}" PLUGINS_FILE="${PLUGINS_
     bash "${ASDF_SCRIPT}" check "${ASDF_PROJECT}")"
 [ "${fallback_check_output}" = "nodejs 22.0.0" ] ||
     fail "check did not report only the missing fallback version"
+printf 'nodejs 20.11.0 \r\ngolang 1.22.1 \t \r\n' > "${ASDF_PROJECT}/.tool-versions"
+crlf_check_output="$(env PATH="${FAKE_BIN}:${PATH}" PLUGINS_FILE="${PLUGINS_FILE}" \
+    INSTALLED_FILE="${INSTALLED_FILE}" ASDF_CALLS="${ASDF_CALLS}" \
+    bash "${ASDF_SCRIPT}" check "${ASDF_PROJECT}")"
+[ "${crlf_check_output}" = "golang 1.22.1" ] ||
+    fail "check reported an empty version after trailing whitespace and CRLF"
+pass "asdf-provision ignores trailing whitespace before CRLF"
+
 printf '%s\n' 'nodejs 20.11.0' 'golang 1.22.1' > "${ASDF_PROJECT}/.tool-versions"
 pass "asdf-provision checks every installable version on each line"
 

@@ -36,7 +36,7 @@ pending() {
         case "${plugin}" in ''|'#'*) continue ;; esac
         for version in "${fields[@]:1}"; do
             version="${version%$'\r'}"
-            case "${version}" in '#'* ) break ;; system|path:*) continue ;; esac
+            case "${version}" in '#'* ) break ;; ''|system|path:*) continue ;; esac
             if ! asdf plugin list 2>/dev/null | grep -qx "${plugin}"; then
                 echo "${plugin} ${version}"
                 continue
