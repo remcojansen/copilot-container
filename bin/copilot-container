@@ -519,9 +519,8 @@ if [ "${summary_color}" -eq 1 ]; then
     printf '\033[0m' >&2
 fi
 if [ -t 0 ] && [ -t 2 ]; then
-    printf 'Press any key to start Copilot (Ctrl-C to cancel)... ' >&2
-    IFS= read -r -s -n 1 || exit 1
-    printf '\n' >&2
+    printf 'Press Enter to start Copilot (Ctrl-C to cancel)... ' >&2
+    IFS= read -r || exit 1
 fi
 
 # --- Start the container detached, then connect in over SSH -------------

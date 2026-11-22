@@ -151,7 +151,7 @@ done
 ! grep -Fq "test-secret-token" "${SUMMARY}" || fail "startup summary exposed the GitHub token"
 ! grep -Fq "test-secret-argument" "${SUMMARY}" || fail "startup summary exposed Copilot arguments"
 ! grep -Fq $'\033' "${SUMMARY}" || fail "redirected startup summary contains terminal color codes"
-! grep -Fq "Press any key" "${SUMMARY}" || fail "non-interactive run prompted to continue"
+! grep -Fq "Press Enter" "${SUMMARY}" || fail "non-interactive run prompted to continue"
 pass "startup summary shows effective configuration without secrets"
 
 if command -v script >/dev/null 2>&1 && script --version 2>/dev/null | grep -q 'util-linux'; then
@@ -161,7 +161,7 @@ if command -v script >/dev/null 2>&1 && script --version 2>/dev/null | grep -q '
         script -q -e -c "${tty_cmd}" /dev/null)"
     [[ "${tty_output}" == *$'\033[36m'* && "${tty_output}" == *$'\033[0m'* ]] ||
         fail "terminal startup summary did not enable and reset color"
-    [[ "${tty_output}" == *"Press any key to start Copilot"* ]] ||
+    [[ "${tty_output}" == *"Press Enter to start Copilot"* ]] ||
         fail "interactive startup did not prompt to continue"
     no_color_output="$(printf 'x\n' | env HOME="${TEST_DIR}/home" TERM=xterm NO_COLOR=1 CAPTURE="${CAPTURE}" \
         SSH_CAPTURE="${SSH_CAPTURE}" PATH="${FAKE_BIN}:${PATH}" \
@@ -184,20 +184,20 @@ if command -v script >/dev/null 2>&1 && script --version 2>/dev/null | grep -q '
         script -q -f -e -c "${tty_cmd}" /dev/null < "${tty_input}" > "${tty_log}" 2>&1 &
     tty_pid=$!
     for _ in $(seq 1 100); do
-        grep -Fq "Press any key to start Copilot" "${tty_log}" && break
+        grep -Fq "Press Enter to start Copilot" "${tty_log}" && break
         sleep 0.05
     done
-    if ! grep -Fq "Press any key to start Copilot" "${tty_log}" ||
+    if ! grep -Fq "Press Enter to start Copilot" "${tty_log}" ||
         grep -q '^run ' "${tty_engine_calls}"; then
         kill "${tty_pid}" 2>/dev/null || true
         wait "${tty_pid}" 2>/dev/null || true
         fail "interactive launcher did not wait before starting the container"
     fi
-    printf 'x' >&9
-    wait "${tty_pid}" || fail "interactive launcher did not continue after a keypress"
+    printf '\n' >&9
+    wait "${tty_pid}" || fail "interactive launcher did not continue after Enter"
     exec 9>&-
-    grep -q '^run ' "${tty_engine_calls}" || fail "keypress did not start the container"
-    pass "interactive startup waits for a keypress before starting the container"
+    grep -q '^run ' "${tty_engine_calls}" || fail "Enter did not start the container"
+    pass "interactive startup waits for Enter before starting the container"
 fi
 
 rm -f "${SSH_CAPTURE}" "${CAPTURE}"
@@ -317,6 +317,38 @@ printf '%s\n' \
     'exit 0' > "${FAKE_BIN}/ssh"
 chmod 755 "${FAKE_BIN}/ssh"
 
+if command -v script >/dev/null 2>&1 && script --version 2>/dev/null | grep -q 'util-linux'; then
+    : > "${SSH_CALLS}"
+    : > "${tty_log}"
+    exec 9<> "${tty_input}"
+    env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CALLS="${SSH_CALLS}" \
+        PATH="${FAKE_BIN}:${PATH}" script -q -f -e -c "${tty_cmd}" /dev/null \
+        < "${tty_input}" > "${tty_log}" 2>&1 &
+    tty_pid=$!
+    for _ in $(seq 1 100); do
+        grep -Fq "Press Enter to start Copilot" "${tty_log}" && break
+        sleep 0.05
+    done
+    printf 'x\n' >&9
+    for _ in $(seq 1 100); do
+        grep -Fq "Install/update them now via asdf?" "${tty_log}" && break
+        sleep 0.05
+    done
+    if ! grep -Fq "Install/update them now via asdf?" "${tty_log}" ||
+        ! kill -0 "${tty_pid}" 2>/dev/null; then
+        kill "${tty_pid}" 2>/dev/null || true
+        wait "${tty_pid}" 2>/dev/null || true
+        fail "tool-install prompt did not wait for a separate answer"
+    fi
+    printf 'y\n' >&9
+    wait "${tty_pid}" || fail "interactive tool installation failed"
+    exec 9>&-
+    grep -Fq "asdf-provision install" "${SSH_CALLS}" ||
+        fail "interactive tool-install answer was not honored"
+    pass "startup confirmation does not consume the tool-install answer"
+fi
+
+rm -f "${SSH_CALLS}"
 printf 'y\n' | env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CALLS="${SSH_CALLS}" \
     PATH="${FAKE_BIN}:${PATH}" "${LAUNCHER}" -m "${PROJECT}" >/dev/null
 
