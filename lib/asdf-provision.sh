@@ -29,34 +29,22 @@ if [ ! -f .tool-versions ]; then
     exit 0
 fi
 
-# First field is the plugin, second is its pinned version; blank/comment
-# lines are skipped. Only the first version per line is checked (any
-# further fallback versions on the same line are uncommon in practice and
-# `asdf install` installs the whole file regardless of what's reported
-# here). "system" and "path:..." are asdf's uninstallable pseudo-versions
-# (use whatever's already on PATH/at a given path) and are never pending.
 pending() {
-    while read -r plugin version _; do
+    while read -r -a fields || [ "${#fields[@]}" -gt 0 ]; do
+        [ "${#fields[@]}" -gt 1 ] || continue
+        plugin="${fields[0]}"
         case "${plugin}" in ''|'#'*) continue ;; esac
-        [ -z "${version}" ] && continue
-        # Strip a trailing \r so CRLF-saved .tool-versions files (e.g.
-        # edited on Windows) don't make an already-installed version look
-        # pending: `read` keeps a trailing \r attached to the last field
-        # since it isn't IFS whitespace, which then fails the exact-match
-        # check against asdf's (CR-free) output below.
-        version="${version%$'\r'}"
-        case "${version}" in system|path:*) continue ;; esac
-        if ! asdf plugin list 2>/dev/null | grep -qx "${plugin}"; then
-            echo "${plugin} ${version}"
-            continue
-        fi
-        # Strip spaces *and* asdf's leading "*" (its marker for the
-        # version currently selected per this project's .tool-versions,
-        # which `asdf list` always applies here since we've already cd'd
-        # into the project dir) before the exact-match comparison below.
-        if ! asdf list "${plugin}" 2>/dev/null | tr -d ' *' | grep -qx "${version}"; then
-            echo "${plugin} ${version}"
-        fi
+        for version in "${fields[@]:1}"; do
+            version="${version%$'\r'}"
+            case "${version}" in '#'* ) break ;; system|path:*) continue ;; esac
+            if ! asdf plugin list 2>/dev/null | grep -qx "${plugin}"; then
+                echo "${plugin} ${version}"
+                continue
+            fi
+            if ! asdf list "${plugin}" 2>/dev/null | tr -d ' *' | grep -qx "${version}"; then
+                echo "${plugin} ${version}"
+            fi
+        done
     done < .tool-versions
 }
 

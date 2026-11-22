@@ -23,7 +23,7 @@ supports personal Copilot instructions and integration with [Hunk](https://hunk.
 - 🌉 **Host bridge** — a single-use, loopback-only SSH session connects the
   launcher to the container and forwards selected integrations
 - 🧰 **Per-project language versions via asdf** — install the Node/Go/Python/etc.
-  versions pinned in the primary project's `.tool-versions` on launch
+  versions pinned in mounted projects' `.tool-versions` files on launch
 
 The container has network access; forwarded tokens, agents and integrations
 also grant capabilities beyond mounted files. Review the startup summary and
@@ -214,8 +214,7 @@ copilot-platform() {
 Replace the example paths with your own, then open a new shell or reload
 your shell configuration. Run `copilot-platform` to start the workspace, or
 pass extra Copilot options, for example `copilot-platform --model claude-sonnet-5`.
-The first mount (`api`) is the starting directory and determines which
-`.tool-versions` file the launcher checks.
+The first mount (`api`) is the starting directory.
 
 Mounting a directory makes it available to the container; `--add-dir`
 separately allows Copilot to access it and trusts its `.github/skills` and
@@ -234,14 +233,14 @@ provisioned, they persist across runs using the same volume. Each project's
 one-size-fits-all global version. `asdf`'s shims directory is put ahead of
 the rest of `PATH` for this reason.
 
-If the primary project has a `.tool-versions` file, the launcher checks
-whether any of its pinned plugins/versions aren't installed yet in that
-selected volume, and if so, prompts you before installing/updating them
-via `asdf plugin add`/`asdf install`. Declining just skips provisioning
-for that run — you can still run `asdf plugin add`/`asdf install`
-manually inside the container, or answer "yes" on a later run. Pass
-`--auto-install-tools` to install pending tools automatically instead of
-prompting, e.g. for non-interactive/automated runs.
+The launcher checks the top-level `.tool-versions` file of each mounted
+project, including read-only mounts. It lists missing tools by project and
+asks once before installing them into the selected volume via `asdf plugin
+add`/`asdf install`. Declining or running without input skips provisioning
+for that run. You can still install tools manually inside the container,
+or answer "yes" on a later run. Pass `--auto-install-tools` to install
+pending tools for all mounts without prompting. Some tool installations
+may require write access to the project directory.
 
 ### Environment variables
 
