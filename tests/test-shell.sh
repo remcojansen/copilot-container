@@ -38,6 +38,13 @@ printf '%s\n' 'instructions' > "${TEST_DIR}/home/.copilot/copilot-instructions.m
 assert_output_contains "-m requires a value" "${LAUNCHER}" -m
 pass "missing option values are rejected"
 
+assert_output_contains "--state-volume requires a value" "${LAUNCHER}" --state-volume
+assert_output_contains "--state-volume must start with a letter or digit" \
+    "${LAUNCHER}" --state-volume 'invalid/name'
+assert_output_contains "--state-volume must start with a letter or digit" \
+    "${LAUNCHER}" --state-volume '-invalid'
+pass "invalid state-volume names are rejected"
+
 assert_output_contains "--engine must be podman or docker" \
     "${LAUNCHER}" --engine invalid -m "${TEST_DIR}"
 pass "invalid engines are rejected"
@@ -163,6 +170,24 @@ physical_project="$(cd -- "${PROJECT}" && pwd -P)"
 grep -nFx "${physical_project}:${PROJECT}" "${CAPTURE}" >/dev/null ||
     fail "no --mount given did not default to the current directory"
 pass "no --mount given defaults to the current directory"
+
+rm -f "${SSH_CAPTURE}" "${CAPTURE}"
+
+SECOND_PROJECT="${TEST_DIR}/second-project"
+mkdir -p "${SECOND_PROJECT}"
+VOLUME_CALLS="${TEST_DIR}/volume-calls"
+for project in "${PROJECT}" "${SECOND_PROJECT}"; do
+    env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CAPTURE="${SSH_CAPTURE}" \
+        ENGINE_CALLS="${VOLUME_CALLS}" PATH="${FAKE_BIN}:${PATH}" \
+        "${LAUNCHER}" --state-volume my-workspace -m "${project}" >/dev/null
+    grep -Fxq "my-workspace:/home/copilot:z" "${CAPTURE}" ||
+        fail "explicit state volume was not used for ${project}"
+done
+grep -Fxq "volume inspect my-workspace" "${VOLUME_CALLS}" ||
+    fail "explicit state volume was not inspected"
+grep -Fxq "volume create my-workspace" "${VOLUME_CALLS}" ||
+    fail "missing explicit state volume was not created"
+pass "explicit state volume is independent of the primary project"
 
 rm -f "${SSH_CAPTURE}" "${CAPTURE}"
 

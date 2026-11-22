@@ -17,8 +17,8 @@ with [Hunk](https://hunk.dev/) (a host-side terminal diff reviewer).
 - ✅ **Skip the permission fatigue** — the container itself is the sandbox,
   so you don't need repetitive manual approval prompts to feel safe letting
   Copilot act
-- 💾 **Persistent per-project state** — Copilot config, permission approvals,
-  and session history survive across runs, scoped per project
+- 💾 **Persistent state** — Copilot config, permission approvals, and session
+  history survive across runs, scoped per project or named volume
 - 🔑 **Seamless auth & commit signing** — GitHub token, GPG/SSH agent all
   forwarded live from the host, nothing copied into the image or volume
 - 🌉 **Locked-down host bridge** — the only path in/out is a single-use,
@@ -70,15 +70,16 @@ build`.
 2. Bind-mounts each `--mount`/`-m` path into the container at the same
    absolute path as on the host (unless you give an explicit
    `host:container` mapping). The *first* `--mount` is the primary project:
-   the container's working directory, and the source for the per-project
-   state volume name.
-3. Creates/reuses a per-project named volume (derived from the first mount
-   path), mounted at the container user's home directory, so Copilot CLI 
-   config, permission approvals, and session/history state persist per project.
+   the container's working directory, and the source for the default state
+   volume name.
+3. Creates/reuses a named volume mounted at the container user's home
+   directory, so Copilot CLI config, permission approvals, and session/history
+   state persist across runs. Its name is derived from the first mount by
+   default; `--state-volume` selects a name explicitly.
 4. If `~/.gitconfig` exists on the host, bind-mounts it read-only into the
    container (see [Git configuration](#git-configuration) below).
 5. If `~/.copilot/config.json` exists on the host, seeds the config into the
-   container on the first run for a given project.
+   container on the first run with a given state volume.
 6. If `~/.copilot/copilot-instructions.md` exists on the host, bind-mounts it
    read-only into the container (see [Copilot config and instructions](#copilot-config-and-instructions)
    below).
@@ -113,6 +114,8 @@ copilot-container [-m <path> ...] [options] [-- <copilot CLI args...>]
                                  as on the host. The first --mount is the
                                  primary project.
   -i, --image <name>            Container image to run (default: copilot-container)
+  --state-volume <name>         Named volume for persistent home state
+                                 (default: derived from the first mount)
   -e, --engine <podman|docker>  Force a specific container engine
   -g, --gitconfig <path>        Host file to mount read-only as ~/.gitconfig
                                  (default: ~/.gitconfig)
@@ -143,7 +146,20 @@ copilot-container \
 ```
 
 `/path/to/your/first-project` is the primary project (container's working directory, and
-the one used to name the persistent state volume).
+the one used to name the persistent state volume unless `--state-volume` is set).
+
+Use the same explicit volume name to retain state across different primary
+projects:
+
+```sh
+copilot-container --state-volume my-workspace -m /path/to/first-project
+copilot-container --state-volume my-workspace -m /path/to/second-project
+```
+
+Volume names must start with a letter or digit and contain only letters,
+digits, underscores, periods, and hyphens. The volume is created if needed
+and is not removed when the container exits. Avoid simultaneous launches
+using the same volume: their SSH bridge state can conflict.
 
 Environment variables:
 
@@ -190,9 +206,9 @@ Podman is preferred; Docker is used automatically if Podman isn't on your
 ## Copilot config and instructions
 
 Copilot CLI stores its config, remembered permission approvals, and
-session/chat history together under `$HOME/.copilot`. That whole directory
-is the per-project persistent volume (see above), so most of it evolves
-freely per project.
+session/chat history together under `$HOME/.copilot`. That directory is
+stored in the persistent home volume, so it is shared by runs using the
+same volume.
 
 Two files are the exception: if `$HOME/.copilot/config.json` and/or
 `$HOME/.copilot/copilot-instructions.md` already exist on the **host**,
@@ -208,8 +224,8 @@ to change it.
 remember per-directory trust approvals), so it can't simply be bind-mounted
 read-only without breaking that. Instead, the host's `config.json` is
 mounted read-only to a staging path, and the entrypoint seed-copies it into
-the writable per-project volume the *first* time a project is run. From
-then on, that project's volume owns its `config.json`: approvals and other
+the writable volume the *first* time it is used. From
+then on, that volume owns its `config.json`: approvals and other
 config changes made from inside the container persist across sessions,
 and later edits to the host file aren't re-synced (matching how the rest
 of `~/.copilot` behaves).
@@ -319,16 +335,16 @@ This list is expected to grow — add packages to `Containerfile` as needed.
 Language runtimes and project-specific tools (Node, Go, a JDK, Python,
 Terraform/OpenTofu, ...) are deliberately **not** baked into the image.
 Instead, `asdf` is preinstalled and its data directory (`~/.asdf`) lives
-under `/home/copilot`, which is the per-project persistent volume (see
-[What the launcher does](#what-the-launcher-does)) — so once a project's
-tools are provisioned, they persist across runs of that same project,
-without requiring an image rebuild or a shared, one-size-fits-all global
-version. `asdf`'s shims directory is put ahead of the rest of `PATH` for
-this reason.
+under `/home/copilot`, which is the persistent home volume (see
+[What the launcher does](#what-the-launcher-does)) — so once tools are
+provisioned, they persist across runs using the same volume. Each project's
+`.tool-versions` selects its versions instead of requiring a shared,
+one-size-fits-all global version. `asdf`'s shims directory is put ahead of
+the rest of `PATH` for this reason.
 
 If the mounted project has a `.tool-versions` file, the launcher checks
 whether any of its pinned plugins/versions aren't installed yet in that
-project's volume, and if so, prompts you before installing/updating them
+selected volume, and if so, prompts you before installing/updating them
 via `asdf plugin add`/`asdf install`. Declining just skips provisioning
 for that run — you can still run `asdf plugin add`/`asdf install`
 manually inside the container, or answer "yes" on a later run. Pass
