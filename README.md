@@ -105,6 +105,8 @@ working directory, state volume, project and additional mounts, and enabled
 integrations. It reports whether a GitHub token is available without printing
 the token or forwarded Copilot arguments. The summary uses color on supported
 terminals; set `NO_COLOR` to disable it.
+When both input and the summary are connected to a terminal, press any key
+to continue or Ctrl-C to cancel. Non-interactive runs do not pause.
 
 ### Options
 

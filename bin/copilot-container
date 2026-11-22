@@ -480,9 +480,9 @@ fi
 
 integration_status() {
     if [ "$1" -eq 1 ]; then
-        printf 'enabled'
+        printf '✓ enabled'
     else
-        printf 'disabled'
+        printf '%s' '- disabled'
     fi
 }
 
@@ -506,7 +506,7 @@ if [ "${#additional_mounts[@]}" -gt 0 ]; then
         printf '    %q\n' "${additional_mounts[i]}" >&2
     done
 fi
-printf '  Integrations: GPG agent %s, SSH agent %s, Hunk %s\n' \
+printf '  Integrations:\n    %s  GPG agent\n    %s  SSH agent\n    %s  Hunk\n' \
     "$(integration_status "${GPG_AGENT}")" \
     "$(integration_status "${SSH_AGENT}")" \
     "$(integration_status "${HUNK_AGENT}")" >&2
@@ -517,6 +517,11 @@ else
 fi
 if [ "${summary_color}" -eq 1 ]; then
     printf '\033[0m' >&2
+fi
+if [ -t 0 ] && [ -t 2 ]; then
+    printf 'Press any key to start Copilot (Ctrl-C to cancel)... ' >&2
+    IFS= read -r -s -n 1 || exit 1
+    printf '\n' >&2
 fi
 
 # --- Start the container detached, then connect in over SSH -------------
