@@ -144,7 +144,8 @@ RUN rm -f /etc/copilot-container-arch.env
 
 # ---- Entrypoint ------------------------------------------------------------
 COPY lib/entrypoint.sh /usr/local/bin/copilot-container-entrypoint
-RUN chmod +x /usr/local/bin/copilot-container-entrypoint
+COPY lib/align-home-ownership.sh /usr/local/bin/copilot-container-align-home-ownership
+RUN chmod +x /usr/local/bin/copilot-container-entrypoint /usr/local/bin/copilot-container-align-home-ownership
 
 # Helper the host launcher invokes over SSH to detect and install a
 # project's pinned tool versions from its .tool-versions file (see

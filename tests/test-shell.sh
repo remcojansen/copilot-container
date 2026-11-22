@@ -515,6 +515,44 @@ system_check_output="$(env PATH="${FAKE_BIN}:${PATH}" PLUGINS_FILE="${PLUGINS_FI
 [ -z "${system_check_output}" ] || fail "check reported 'system'/'path:' pseudo-versions as pending"
 pass "asdf-provision check ignores 'system'/'path:' pseudo-versions"
 
+OWNERSHIP_HOME="${TEST_DIR}/ownership-home"
+READONLY_MOUNT="${OWNERSHIP_HOME}/reference [*]\docs"
+WRITABLE_MOUNT="${OWNERSHIP_HOME}/writable project"
+SIBLING_DIR="${OWNERSHIP_HOME}/reference x\docs"
+mkdir -p "${READONLY_MOUNT}/nested" "${WRITABLE_MOUNT}/nested" "${SIBLING_DIR}" "${OWNERSHIP_HOME}/.asdf"
+touch "${READONLY_MOUNT}/nested/file" "${WRITABLE_MOUNT}/nested/file" "${SIBLING_DIR}/file" "${OWNERSHIP_HOME}/.asdf/tool"
+MOUNTINFO="${TEST_DIR}/mountinfo"
+: > "${MOUNTINFO}"
+for target in "${OWNERSHIP_HOME}" "${READONLY_MOUNT}" "${WRITABLE_MOUNT}"; do
+    encoded_target="${target//\\/\\134}"
+    encoded_target="${encoded_target// /\\040}"
+    printf '1 0 0:1 / %s rw - ext4 /dev/test rw\n' "${encoded_target}" >> "${MOUNTINFO}"
+done
+CHOWN_CAPTURE="${TEST_DIR}/chown-calls"
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'shift' \
+    'printf "%s\n" "$@" >> "${CHOWN_CAPTURE}"' \
+    'for path in "$@"; do' \
+    '  case "${path}" in' \
+    '    "${READONLY_MOUNT}"|"${READONLY_MOUNT}/"*) exit 1 ;;' \
+    '  esac' \
+    'done' > "${FAKE_BIN}/chown"
+chmod 755 "${FAKE_BIN}/chown"
+env PATH="${FAKE_BIN}:${PATH}" CHOWN_CAPTURE="${CHOWN_CAPTURE}" READONLY_MOUNT="${READONLY_MOUNT}" \
+    bash "${ROOT_DIR}/lib/align-home-ownership.sh" "${OWNERSHIP_HOME}" 1000 1000 "${MOUNTINFO}" ||
+    fail "ownership alignment attempted to chown a read-only mount"
+grep -Fxq "${OWNERSHIP_HOME}/.asdf/tool" "${CHOWN_CAPTURE}" ||
+    fail "ownership alignment skipped persistent tools"
+grep -Fxq "${SIBLING_DIR}/file" "${CHOWN_CAPTURE}" ||
+    fail "mount path glob characters matched an unrelated directory"
+! grep -Fq "${WRITABLE_MOUNT}" "${CHOWN_CAPTURE}" ||
+    fail "ownership alignment touched a writable project mount"
+! grep -Fq "${READONLY_MOUNT}" "${CHOWN_CAPTURE}" ||
+    fail "ownership alignment touched a read-only project mount"
+rm -f "${FAKE_BIN}/chown"
+pass "ownership alignment prunes nested mounts without skipping other files"
+
 assert_output_contains "HOST_UID must be a numeric user ID" \
     env HOST_UID=invalid bash "${ENTRYPOINT}"
 pass "invalid runtime UID is rejected"
