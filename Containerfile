@@ -20,7 +20,7 @@ FROM ubuntu:24.04@sha256:224a1869083a311ef3f13648a154ba79832fbef6364d31493642ca0
 
 # ---- Pinned tool versions ----------------------------------------------
 ARG COPILOT_CLI_VERSION=1.0.114
-ARG HUNK_VERSION=0.23.0
+ARG HUNK_VERSION=0.25.0
 ARG MADO_VERSION=0.3.2
 ARG ASDF_VERSION=0.20.2
 
