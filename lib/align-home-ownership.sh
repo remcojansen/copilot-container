@@ -46,4 +46,4 @@ find "${runtime_home}" -xdev "${prune_mounts[@]}" \
     ! -path "${runtime_home}/.copilot-container-bridge/*" \
     ! -path "${runtime_home}/.hunk" \
     ! -path "${runtime_home}/.hunk/*" \
-    -exec chown "${host_uid}:${host_gid}" {} +
+    -exec chown -h "${host_uid}:${host_gid}" {} +

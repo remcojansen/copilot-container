@@ -521,6 +521,8 @@ WRITABLE_MOUNT="${OWNERSHIP_HOME}/writable project"
 SIBLING_DIR="${OWNERSHIP_HOME}/reference x\docs"
 mkdir -p "${READONLY_MOUNT}/nested" "${WRITABLE_MOUNT}/nested" "${SIBLING_DIR}" "${OWNERSHIP_HOME}/.asdf"
 touch "${READONLY_MOUNT}/nested/file" "${WRITABLE_MOUNT}/nested/file" "${SIBLING_DIR}/file" "${OWNERSHIP_HOME}/.asdf/tool"
+ln -s "${READONLY_MOUNT}/nested/file" "${OWNERSHIP_HOME}/reference-link"
+ln -s "${TEST_DIR}/missing-target" "${OWNERSHIP_HOME}/dangling-link"
 MOUNTINFO="${TEST_DIR}/mountinfo"
 : > "${MOUNTINFO}"
 for target in "${OWNERSHIP_HOME}" "${READONLY_MOUNT}" "${WRITABLE_MOUNT}"; do
@@ -531,9 +533,12 @@ done
 CHOWN_CAPTURE="${TEST_DIR}/chown-calls"
 printf '%s\n' \
     '#!/usr/bin/env bash' \
+    'no_follow=0' \
+    'if [ "${1:-}" = "-h" ]; then no_follow=1; shift; fi' \
     'shift' \
     'printf "%s\n" "$@" >> "${CHOWN_CAPTURE}"' \
     'for path in "$@"; do' \
+    '  if [ -L "${path}" ] && [ "${no_follow}" -eq 0 ]; then exit 1; fi' \
     '  case "${path}" in' \
     '    "${READONLY_MOUNT}"|"${READONLY_MOUNT}/"*) exit 1 ;;' \
     '  esac' \
@@ -546,12 +551,18 @@ grep -Fxq "${OWNERSHIP_HOME}/.asdf/tool" "${CHOWN_CAPTURE}" ||
     fail "ownership alignment skipped persistent tools"
 grep -Fxq "${SIBLING_DIR}/file" "${CHOWN_CAPTURE}" ||
     fail "mount path glob characters matched an unrelated directory"
+grep -Fxq "${OWNERSHIP_HOME}/reference-link" "${CHOWN_CAPTURE}" ||
+    fail "ownership alignment skipped a symlink to a mounted file"
+grep -Fxq "${OWNERSHIP_HOME}/dangling-link" "${CHOWN_CAPTURE}" ||
+    fail "ownership alignment skipped a dangling symlink"
 ! grep -Fq "${WRITABLE_MOUNT}" "${CHOWN_CAPTURE}" ||
     fail "ownership alignment touched a writable project mount"
 ! grep -Fq "${READONLY_MOUNT}" "${CHOWN_CAPTURE}" ||
     fail "ownership alignment touched a read-only project mount"
 rm -f "${FAKE_BIN}/chown"
-pass "ownership alignment prunes nested mounts without skipping other files"
+bash "${ROOT_DIR}/lib/align-home-ownership.sh" "${OWNERSHIP_HOME}" "$(id -u)" "$(id -g)" "${MOUNTINFO}" ||
+    fail "ownership alignment failed on symlinks"
+pass "ownership alignment prunes nested mounts and does not follow symlinks"
 
 assert_output_contains "HOST_UID must be a numeric user ID" \
     env HOST_UID=invalid bash "${ENTRYPOINT}"
