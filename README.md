@@ -17,7 +17,7 @@ supports personal Copilot instructions and integration with [Hunk](https://hunk.
   reduce the risks of granting Copilot broad permissions. Writable mounts,
   network access and forwarded credentials remain accessible.
 - 💾 **Persistent state** — Copilot config, permission approvals, and session
-  history survive across runs, scoped per project or named volume
+  history survive across runs using the same state volume
 - 🔑 **Seamless auth & commit signing** — GitHub token, GPG/SSH agent all
   forwarded live from the host, nothing copied into the image or volume
 - 🌉 **Host bridge** — a single-use, loopback-only SSH session connects the
@@ -157,6 +157,9 @@ copilot-container \
 `/path/to/your/first-project` is the primary project (container's working directory, and
 the one used to name the persistent state volume unless `--state-volume` is set).
 
+### Persistent state volumes
+
+By default, the volume name is derived from the primary project's host path.
 Use the same explicit volume name to retain state across different primary
 projects:
 
@@ -172,6 +175,10 @@ this version of the launcher can use a given state volume at a time, per
 container engine. A retained or stopped container also reserves the volume;
 inspect it and remove it when no longer needed. Containers started by older
 launchers or outside the launcher are not covered by this protection.
+The persistent home volume uses `:z` shared SELinux labeling so its files
+remain accessible on SELinux hosts.
+
+### Read-only project mounts
 
 Use `--mount-ro` for projects that should not be modified:
 
@@ -189,8 +196,9 @@ filesystem mounts depends on the container engine and kernel.
 
 ### Reusable workspaces
 
-Save a function in `~/.zshrc` or `~/.bashrc` to reuse a named volume and
-project mounts:
+A workspace can be a shell function that reuses a named volume and project
+mounts; it is not a separate launcher object. Save a function in `~/.zshrc`
+or `~/.bashrc`:
 
 ```sh
 copilot-platform() {
@@ -214,7 +222,28 @@ separately allows Copilot to access it and trusts its `.github/skills` and
 `.github/agents`. Add it only for projects you trust. The startup summary
 shows mounts but does not show forwarded Copilot options such as `--add-dir`.
 
-Environment variables:
+### Per-project language/tool versions
+
+Language runtimes and project-specific tools (Node, Go, a JDK, Python,
+Terraform/OpenTofu, ...) are deliberately **not** baked into the image.
+Instead, `asdf` is preinstalled and its data directory (`~/.asdf`) lives
+under `/home/copilot`, which is the persistent home volume (see
+[What the launcher does](#what-the-launcher-does)) — so once tools are
+provisioned, they persist across runs using the same volume. Each project's
+`.tool-versions` selects its versions instead of requiring a shared,
+one-size-fits-all global version. `asdf`'s shims directory is put ahead of
+the rest of `PATH` for this reason.
+
+If the primary project has a `.tool-versions` file, the launcher checks
+whether any of its pinned plugins/versions aren't installed yet in that
+selected volume, and if so, prompts you before installing/updating them
+via `asdf plugin add`/`asdf install`. Declining just skips provisioning
+for that run — you can still run `asdf plugin add`/`asdf install`
+manually inside the container, or answer "yes" on a later run. Pass
+`--auto-install-tools` to install pending tools automatically instead of
+prompting, e.g. for non-interactive/automated runs.
+
+### Environment variables
 
 | Variable | Purpose |
 |---|---|
@@ -223,35 +252,7 @@ Environment variables:
 | `COPILOT_CONTAINER_ENGINE` | Force `podman` or `docker` |
 | `COPILOT_CONTAINER_IMAGE`  | Default image name/tag to run |
 
-## Troubleshooting startup
-
-If startup fails, the launcher prints the container's logs before removing
-it. To stream logs and retain the container for inspection, run:
-
-```sh
-copilot-container --debug -m /path/to/your/project
-```
-
-Debug mode reports startup stages, including the ownership traversal of
-the persistent home directory, which includes any tools installed by asdf.
-It also keeps the container running if the entrypoint or sshd exits, so
-you can inspect it without SSH. The launcher still exits with a failure
-status if SSH cannot connect.
-
-When the launcher exits, it prints commands to read the retained
-container's logs, open a root shell using `podman exec` (or `docker exec`),
-and remove the container. Debug containers are retained even after a
-successful session; remove them when finished. Their project mounts remain
-accessible until removal.
-
-Debug mode does not enable shell tracing or print forwarded tokens.
-Rebuild the image and reinstall the launcher after updating this project
-to use the entrypoint diagnostics and keep-alive behavior.
-
-The persistent home volume is mounted with `:z` shared SELinux labeling
-so its files remain accessible across container instances on SELinux hosts.
-
-## Engine selection
+### Engine selection
 
 Podman is preferred; Docker is used automatically if Podman isn't on your
 `PATH`. Override explicitly with `-e/--engine` or `COPILOT_CONTAINER_ENGINE`.
@@ -383,27 +384,6 @@ Built from `ubuntu:24.04`, the image includes:
 
 This list is expected to grow — add packages to `Containerfile` as needed.
 
-### Per-project language/tool versions
-
-Language runtimes and project-specific tools (Node, Go, a JDK, Python,
-Terraform/OpenTofu, ...) are deliberately **not** baked into the image.
-Instead, `asdf` is preinstalled and its data directory (`~/.asdf`) lives
-under `/home/copilot`, which is the persistent home volume (see
-[What the launcher does](#what-the-launcher-does)) — so once tools are
-provisioned, they persist across runs using the same volume. Each project's
-`.tool-versions` selects its versions instead of requiring a shared,
-one-size-fits-all global version. `asdf`'s shims directory is put ahead of
-the rest of `PATH` for this reason.
-
-If the mounted project has a `.tool-versions` file, the launcher checks
-whether any of its pinned plugins/versions aren't installed yet in that
-selected volume, and if so, prompts you before installing/updating them
-via `asdf plugin add`/`asdf install`. Declining just skips provisioning
-for that run — you can still run `asdf plugin add`/`asdf install`
-manually inside the container, or answer "yes" on a later run. Pass
-`--auto-install-tools` to install pending tools automatically instead of
-prompting, e.g. for non-interactive/automated runs.
-
 ### Package installation approach
 
 Packages available in Ubuntu's apt repositories (`git`, `make`, `sed`,
@@ -451,7 +431,7 @@ make build EXTRA_APT_PACKAGES="build-essential libssl-dev zlib1g-dev \
     liblzma-dev tk-dev libxml2-dev libxmlsec1-dev"
 ```
 
-## Updating pinned tool versions
+### Updating pinned tool versions
 
 Every pinned tool's version is a build arg with a known-good default. To
 bump one:
@@ -466,6 +446,40 @@ default in `Containerfile`. The pinned tools and their `ARG` names are:
 The Ubuntu base image is pinned by digest and should be
 refreshed deliberately when updating the base OS.
 
+## Troubleshooting startup
+
+If startup fails, the launcher prints the container's logs before removing
+it. To stream logs and retain the container for inspection, run:
+
+```sh
+copilot-container --debug -m /path/to/your/project
+```
+
+Debug mode reports startup stages, including the ownership traversal of
+the persistent home directory, which includes any tools installed by asdf.
+It also keeps the container running if the entrypoint or sshd exits, so
+you can inspect it without SSH. The launcher still exits with a failure
+status if SSH cannot connect.
+
+When the launcher exits, it prints commands to read the retained
+container's logs, open a root shell using `podman exec` (or `docker exec`),
+and remove the container. Debug containers are retained even after a
+successful session; remove them when finished. Their project mounts remain
+accessible until removal.
+
+Debug mode does not enable shell tracing or print forwarded tokens.
+Rebuild the image and reinstall the launcher after updating this project
+to use the entrypoint diagnostics and keep-alive behavior.
+
+## Known limitations / not yet implemented
+
+- **Keyring/keychain forwarding** is missing. Copilot authentication requires
+  an authenticated github-cli session on the host or storing the token in plain
+  text on the attached volume inside the container.
+- **Docker support has NOT been tested.** Everything has been built/run with
+  Podman on macOS/arm64 and Linux so far.
+- **Windows is not a supported host platform.**
+
 ## Licensing
 
 This repository's own code is MIT-licensed (see `LICENSE`). The container
@@ -478,12 +492,3 @@ text and attribution notices for bundled third-party components.
 
 This project is not affiliated with, endorsed by, or sponsored by GitHub,
 Inc. "GitHub" and "GitHub Copilot" are trademarks of GitHub, Inc.
-
-## Known limitations / not yet implemented
-
-- **Keyring/keychain forwarding** is missing. Copilot authentication requires
-  an authenticated github-cli session on the host or storing the token in plain
-  text on the attached volume inside the container.
-- **Docker support has NOT been tested.** Everything has been built/run with
-  Podman on macOS/arm64 and Linux so far. 
-- **Windows is not a supported host platform.**
