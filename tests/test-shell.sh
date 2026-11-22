@@ -36,6 +36,7 @@ printf '%s\n' '{}' > "${TEST_DIR}/home/.copilot/config.json"
 printf '%s\n' 'instructions' > "${TEST_DIR}/home/.copilot/copilot-instructions.md"
 
 assert_output_contains "-m requires a value" "${LAUNCHER}" -m
+assert_output_contains "--mount-ro requires a value" "${LAUNCHER}" --mount-ro
 pass "missing option values are rejected"
 
 assert_output_contains "--state-volume requires a value" "${LAUNCHER}" --state-volume
@@ -160,6 +161,48 @@ done
 ! grep -Fq $'\033' "${SUMMARY}" || fail "redirected startup summary contains terminal color codes"
 ! grep -Fq "Press Enter" "${SUMMARY}" || fail "non-interactive run prompted to continue"
 pass "startup summary shows effective configuration without secrets"
+
+env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CAPTURE="${SSH_CAPTURE}" PATH="${FAKE_BIN}:${PATH}" \
+    "${LAUNCHER}" --mount-ro "${PROJECT}:/workspace/reference" -m "${SECOND_PROJECT}:/workspace/work" \
+    >/dev/null 2>"${SUMMARY}"
+grep -Fxq "${PROJECT}:/workspace/reference:ro" "${CAPTURE}" ||
+    fail "read-only mount did not include the engine's ro option"
+grep -Fxq "${SECOND_PROJECT}:/workspace/work" "${CAPTURE}" ||
+    fail "read-write mount changed unexpectedly"
+grep -Fq 'Working directory: /workspace/reference' "${SUMMARY}" ||
+    fail "read-only first mount was not the working directory"
+grep -Fq "read-only  ${PROJECT} -> /workspace/reference" "${SUMMARY}" ||
+    fail "summary did not show the read-only project"
+grep -Fq "read-write  ${SECOND_PROJECT} -> /workspace/work" "${SUMMARY}" ||
+    fail "summary did not show the read-write project"
+grep -Fq 'cd /workspace/reference &&' "${SSH_CAPTURE}" ||
+    fail "read-only first mount was not used as the working directory"
+pass "mixed mounts preserve order, access modes and primary directory"
+
+env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CAPTURE="${SSH_CAPTURE}" PATH="${FAKE_BIN}:${PATH}" \
+    "${LAUNCHER}" --mount-ro "${PROJECT}" >/dev/null 2>"${SUMMARY}"
+grep -Fxq "${PROJECT}:${PROJECT}:ro" "${CAPTURE}" ||
+    fail "read-only mount did not default to the host path"
+pass "read-only mount defaults to the host path"
+
+env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CAPTURE="${SSH_CAPTURE}" PATH="${FAKE_BIN}:${PATH}" \
+    "${LAUNCHER}" -m "${PROJECT}" --mount-ro "${SECOND_PROJECT}:/workspace/reference" \
+    >/dev/null 2>"${SUMMARY}"
+grep -Fxq "${SECOND_PROJECT}:/workspace/reference:ro" "${CAPTURE}" ||
+    fail "read-only mount after a writable mount lost its mode"
+grep -Fq "Working directory: ${PROJECT}" "${SUMMARY}" ||
+    fail "read-write first mount was not the working directory"
+pass "read-only mount after a writable mount preserves its mode"
+
+mkdir -p "${PROJECT}/nested"
+env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CAPTURE="${SSH_CAPTURE}" PATH="${FAKE_BIN}:${PATH}" \
+    "${LAUNCHER}" --mount-ro "${PROJECT}:/workspace" -m "${PROJECT}/nested:/workspace/nested" \
+    >/dev/null 2>"${SUMMARY}"
+grep -Fxq "${PROJECT}:/workspace:ro" "${CAPTURE}" ||
+    fail "overlapping read-only mount was not passed through"
+grep -Fxq "${PROJECT}/nested:/workspace/nested" "${CAPTURE}" ||
+    fail "overlapping read-write mount was not passed through"
+pass "overlapping mounts are passed to the container engine"
 
 if command -v script >/dev/null 2>&1 && script --version 2>/dev/null | grep -q 'util-linux'; then
     tty_cmd="$(printf '%q ' "${LAUNCHER}" -m "${PROJECT}")"
@@ -471,6 +514,55 @@ system_check_output="$(env PATH="${FAKE_BIN}:${PATH}" PLUGINS_FILE="${PLUGINS_FI
     bash "${ASDF_SCRIPT}" check "${ASDF_PROJECT}")"
 [ -z "${system_check_output}" ] || fail "check reported 'system'/'path:' pseudo-versions as pending"
 pass "asdf-provision check ignores 'system'/'path:' pseudo-versions"
+
+OWNERSHIP_HOME="${TEST_DIR}/ownership-home"
+READONLY_MOUNT="${OWNERSHIP_HOME}/reference [*]\docs"
+WRITABLE_MOUNT="${OWNERSHIP_HOME}/writable project"
+SIBLING_DIR="${OWNERSHIP_HOME}/reference x\docs"
+mkdir -p "${READONLY_MOUNT}/nested" "${WRITABLE_MOUNT}/nested" "${SIBLING_DIR}" "${OWNERSHIP_HOME}/.asdf"
+touch "${READONLY_MOUNT}/nested/file" "${WRITABLE_MOUNT}/nested/file" "${SIBLING_DIR}/file" "${OWNERSHIP_HOME}/.asdf/tool"
+ln -s "${READONLY_MOUNT}/nested/file" "${OWNERSHIP_HOME}/reference-link"
+ln -s "${TEST_DIR}/missing-target" "${OWNERSHIP_HOME}/dangling-link"
+MOUNTINFO="${TEST_DIR}/mountinfo"
+: > "${MOUNTINFO}"
+for target in "${OWNERSHIP_HOME}" "${READONLY_MOUNT}" "${WRITABLE_MOUNT}"; do
+    encoded_target="${target//\\/\\134}"
+    encoded_target="${encoded_target// /\\040}"
+    printf '1 0 0:1 / %s rw - ext4 /dev/test rw\n' "${encoded_target}" >> "${MOUNTINFO}"
+done
+CHOWN_CAPTURE="${TEST_DIR}/chown-calls"
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'no_follow=0' \
+    'if [ "${1:-}" = "-h" ]; then no_follow=1; shift; fi' \
+    'shift' \
+    'printf "%s\n" "$@" >> "${CHOWN_CAPTURE}"' \
+    'for path in "$@"; do' \
+    '  if [ -L "${path}" ] && [ "${no_follow}" -eq 0 ]; then exit 1; fi' \
+    '  case "${path}" in' \
+    '    "${READONLY_MOUNT}"|"${READONLY_MOUNT}/"*) exit 1 ;;' \
+    '  esac' \
+    'done' > "${FAKE_BIN}/chown"
+chmod 755 "${FAKE_BIN}/chown"
+env PATH="${FAKE_BIN}:${PATH}" CHOWN_CAPTURE="${CHOWN_CAPTURE}" READONLY_MOUNT="${READONLY_MOUNT}" \
+    bash "${ROOT_DIR}/lib/align-home-ownership.sh" "${OWNERSHIP_HOME}" 1000 1000 "${MOUNTINFO}" ||
+    fail "ownership alignment attempted to chown a read-only mount"
+grep -Fxq "${OWNERSHIP_HOME}/.asdf/tool" "${CHOWN_CAPTURE}" ||
+    fail "ownership alignment skipped persistent tools"
+grep -Fxq "${SIBLING_DIR}/file" "${CHOWN_CAPTURE}" ||
+    fail "mount path glob characters matched an unrelated directory"
+grep -Fxq "${OWNERSHIP_HOME}/reference-link" "${CHOWN_CAPTURE}" ||
+    fail "ownership alignment skipped a symlink to a mounted file"
+grep -Fxq "${OWNERSHIP_HOME}/dangling-link" "${CHOWN_CAPTURE}" ||
+    fail "ownership alignment skipped a dangling symlink"
+! grep -Fq "${WRITABLE_MOUNT}" "${CHOWN_CAPTURE}" ||
+    fail "ownership alignment touched a writable project mount"
+! grep -Fq "${READONLY_MOUNT}" "${CHOWN_CAPTURE}" ||
+    fail "ownership alignment touched a read-only project mount"
+rm -f "${FAKE_BIN}/chown"
+bash "${ROOT_DIR}/lib/align-home-ownership.sh" "${OWNERSHIP_HOME}" "$(id -u)" "$(id -g)" "${MOUNTINFO}" ||
+    fail "ownership alignment failed on symlinks"
+pass "ownership alignment prunes nested mounts and does not follow symlinks"
 
 assert_output_contains "HOST_UID must be a numeric user ID" \
     env HOST_UID=invalid bash "${ENTRYPOINT}"

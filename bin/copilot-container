@@ -12,16 +12,16 @@
 #
 # Options:
 #   -m, --mount <host_path>[:<container_path>]
-#                            Bind-mount a host directory (repeatable).
-#                            Defaults to the current directory if omitted.
+#                            Bind-mount a host directory read-write (repeatable).
+#   --mount-ro <host_path>[:<container_path>]
+#                            Bind-mount a host directory read-only (repeatable).
+#                            If no mount is given, defaults to the current directory.
 #                            If no container path is given, it is mounted
 #                            at the same absolute path inside the
-#                            container as on the host, so paths stay
-#                            recognizable. The *first* --mount given is
+#                            container as on the host. The first mount is
 #                            treated as the primary project: its directory
 #                            is the container's working directory, and its
-#                            path is used to derive the per-project state
-#                            volume name.
+#                            path determines the default state volume.
 #   -i, --image <name>       Container image to run (default: copilot-container)
 #   --state-volume <name>    Use this named volume for persistent home state.
 #                            Defaults to a name derived from the first mount.
@@ -145,6 +145,7 @@ HUNK_AGENT=0
 AUTO_INSTALL_TOOLS=0
 DEBUG=0
 MOUNT_ARGS=()
+MOUNT_MODES=()
 FORWARD_ARGS=()
 
 # How many 0.2s polling attempts (~150 => 30s) to wait for the container's
@@ -170,6 +171,13 @@ while [ $# -gt 0 ]; do
         -m|--mount)
             require_option_value "$1" "${2:-}"
             MOUNT_ARGS+=("$2")
+            MOUNT_MODES+=("rw")
+            shift 2
+            ;;
+        --mount-ro)
+            require_option_value "$1" "${2:-}"
+            MOUNT_ARGS+=("$2")
+            MOUNT_MODES+=("ro")
             shift 2
             ;;
         -i|--image)
@@ -242,6 +250,7 @@ done
 
 if [ "${#MOUNT_ARGS[@]}" -eq 0 ]; then
     MOUNT_ARGS=("${PWD}")
+    MOUNT_MODES=("rw")
 fi
 
 if [ "${GITCONFIG_PATH}" != "${HOME}/.gitconfig" ] && [ ! -f "${GITCONFIG_PATH}" ]; then
@@ -338,7 +347,9 @@ fi
 BIND_FLAGS=()
 HOST_PATHS=()
 CONTAINER_PATHS=()
-for m in "${MOUNT_ARGS[@]}"; do
+for ((mount_index = 0; mount_index < ${#MOUNT_ARGS[@]}; mount_index++)); do
+    m="${MOUNT_ARGS[mount_index]}"
+    mount_mode="${MOUNT_MODES[mount_index]}"
     if [ -z "${m}" ]; then
         echo "error: mount path must not be empty" >&2
         exit 2
@@ -363,7 +374,11 @@ for m in "${MOUNT_ARGS[@]}"; do
         exit 2
     fi
     host_path="$(cd -- "${host_path}" && pwd -P)"
-    BIND_FLAGS+=(-v "${host_path}:${container_path}")
+    if [ "${mount_mode}" = "ro" ]; then
+        BIND_FLAGS+=(-v "${host_path}:${container_path}:ro")
+    else
+        BIND_FLAGS+=(-v "${host_path}:${container_path}")
+    fi
     HOST_PATHS+=("${host_path}")
     CONTAINER_PATHS+=("${container_path}")
 done
@@ -508,9 +523,14 @@ echo "copilot-container: startup configuration:" >&2
 printf '  Engine: %q\n  Image: %q\n' "${ENGINE}" "${IMAGE}" >&2
 printf '  Working directory: %q\n' "${PRIMARY_CONTAINER_PATH}" >&2
 printf '  State volume: %q -> /home/copilot\n' "${VOLUME_NAME}" >&2
-echo "  Project mounts (read-write):" >&2
+echo "  Project mounts:" >&2
 for ((i = 0; i < ${#HOST_PATHS[@]}; i++)); do
-    printf '    %q -> %q\n' "${HOST_PATHS[i]}" "${CONTAINER_PATHS[i]}" >&2
+    if [ "${MOUNT_MODES[i]}" = "ro" ]; then
+        mount_label="read-only"
+    else
+        mount_label="read-write"
+    fi
+    printf '    %s  %q -> %q\n' "${mount_label}" "${HOST_PATHS[i]}" "${CONTAINER_PATHS[i]}" >&2
 done
 additional_mounts=("${GIT_FLAGS[@]}" "${COPILOT_FLAGS[@]}" "${GPG_FLAGS[@]}" "${SSH_FLAGS[@]}" "${HUNK_FLAGS[@]}")
 if [ "${#additional_mounts[@]}" -gt 0 ]; then

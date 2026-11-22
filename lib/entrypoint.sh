@@ -91,24 +91,8 @@ if [ -f "${CONFIG_SEED}" ] && [ ! -f "${RUNTIME_HOME}/.copilot/config.json" ]; t
     cp "${CONFIG_SEED}" "${RUNTIME_HOME}/.copilot/config.json"
 fi
 
-# Read-only config files and mounted sockets under the home directory
-# cannot be chowned. Exclude those paths while aligning the writable state
-# volume. .ssh and .copilot-container-bridge are excluded too: they're
-# (re)created fresh with correct ownership further below, every run.
 debug_log "aligning ownership under ${RUNTIME_HOME} (including installed asdf tools)"
-find "${RUNTIME_HOME}" -xdev \
-    ! -path "${RUNTIME_HOME}/.gitconfig" \
-    ! -path "${CONFIG_SEED}" \
-    ! -path "${RUNTIME_HOME}/.copilot/copilot-instructions.md" \
-    ! -path "${RUNTIME_HOME}/.gnupg*" \
-    ! -path "${RUNTIME_HOME}/.gnupg/*" \
-    ! -path "${RUNTIME_HOME}/.ssh" \
-    ! -path "${RUNTIME_HOME}/.ssh/*" \
-    ! -path "${RUNTIME_HOME}/.copilot-container-bridge" \
-    ! -path "${RUNTIME_HOME}/.copilot-container-bridge/*" \
-    ! -path "${RUNTIME_HOME}/.hunk" \
-    ! -path "${RUNTIME_HOME}/.hunk/*" \
-    -exec chown "${HOST_UID}:${HOST_GID}" {} +
+/usr/local/bin/copilot-container-align-home-ownership "${RUNTIME_HOME}" "${HOST_UID}" "${HOST_GID}"
 debug_log "ownership alignment complete; configuring SSH"
 
 # --- SSH login for the host launcher -------------------------------------
