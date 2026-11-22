@@ -100,6 +100,12 @@ build`.
    [agent forwarding](#agent-forwarding-gpg--ssh) and Hunk's broker
    ([Hunk integration](#hunk-integration)) piggyback on.
 
+Before starting the container, the launcher prints the selected engine, image,
+working directory, state volume, project and additional mounts, and enabled
+integrations. It reports whether a GitHub token is available without printing
+the token or forwarded Copilot arguments. The summary uses color on supported
+terminals; set `NO_COLOR` to disable it.
+
 ### Options
 
 ```

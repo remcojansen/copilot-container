@@ -132,12 +132,53 @@ pass "launcher always connects in over ssh to run copilot"
 
 rm -f "${SSH_CAPTURE}" "${CAPTURE}"
 
+SUMMARY="${TEST_DIR}/startup-summary"
+SECOND_PROJECT="${TEST_DIR}/second-project"
+mkdir -p "${SECOND_PROJECT}"
+env HOME="${TEST_DIR}/home" GH_TOKEN="test-secret-token" CAPTURE="${CAPTURE}" \
+    SSH_CAPTURE="${SSH_CAPTURE}" PATH="${FAKE_BIN}:${PATH}" \
+    "${LAUNCHER}" -m "${PROJECT}" -m "${SECOND_PROJECT}:/workspace/other" \
+    -- --model test-secret-argument >/dev/null 2>"${SUMMARY}"
+
+for expected in \
+    "Engine: podman" "Image: copilot-container" "Working directory: ${PROJECT}" \
+    "State volume: copilot-container_" "${PROJECT} -> ${PROJECT}" \
+    "${SECOND_PROJECT} -> /workspace/other" \
+    "${TEST_DIR}/home/.gitconfig:/home/copilot/.gitconfig:ro" \
+    "GPG agent disabled, SSH agent disabled, Hunk disabled" "GitHub token: available"; do
+    grep -Fq -- "${expected}" "${SUMMARY}" || fail "startup summary did not show: ${expected}"
+done
+! grep -Fq "test-secret-token" "${SUMMARY}" || fail "startup summary exposed the GitHub token"
+! grep -Fq "test-secret-argument" "${SUMMARY}" || fail "startup summary exposed Copilot arguments"
+! grep -Fq $'\033' "${SUMMARY}" || fail "redirected startup summary contains terminal color codes"
+pass "startup summary shows effective configuration without secrets"
+
+if command -v script >/dev/null 2>&1 && script --version 2>/dev/null | grep -q 'util-linux'; then
+    tty_cmd="$(printf '%q ' "${LAUNCHER}" -m "${PROJECT}")"
+    tty_output="$(env HOME="${TEST_DIR}/home" TERM=xterm NO_COLOR= CAPTURE="${CAPTURE}" \
+        SSH_CAPTURE="${SSH_CAPTURE}" PATH="${FAKE_BIN}:${PATH}" \
+        script -q -e -c "${tty_cmd}" /dev/null)"
+    [[ "${tty_output}" == *$'\033[36m'* && "${tty_output}" == *$'\033[0m'* ]] ||
+        fail "terminal startup summary did not enable and reset color"
+    no_color_output="$(env HOME="${TEST_DIR}/home" TERM=xterm NO_COLOR=1 CAPTURE="${CAPTURE}" \
+        SSH_CAPTURE="${SSH_CAPTURE}" PATH="${FAKE_BIN}:${PATH}" \
+        script -q -e -c "${tty_cmd}" /dev/null)"
+    [[ "${no_color_output}" != *$'\033'* ]] || fail "NO_COLOR did not disable terminal color"
+    dumb_output="$(env HOME="${TEST_DIR}/home" TERM=dumb NO_COLOR= CAPTURE="${CAPTURE}" \
+        SSH_CAPTURE="${SSH_CAPTURE}" PATH="${FAKE_BIN}:${PATH}" \
+        script -q -e -c "${tty_cmd}" /dev/null)"
+    [[ "${dumb_output}" != *$'\033'* ]] || fail "dumb terminal received color codes"
+    pass "startup summary uses terminal color and respects NO_COLOR"
+fi
+
+rm -f "${SSH_CAPTURE}" "${CAPTURE}"
+
 # Test --hunk-agent mounts Hunk's runtime state and exports broker settings
 mkdir -p "${TEST_DIR}/home/.hunk/hunk-mcp/security-v1"
 
 env HOME="${TEST_DIR}/home" HUNK_MCP_PORT=56789 CAPTURE="${CAPTURE}" \
     SSH_CAPTURE="${SSH_CAPTURE}" PATH="${FAKE_BIN}:${PATH}" \
-    "${LAUNCHER}" -m "${PROJECT}" --hunk-agent >/dev/null
+    "${LAUNCHER}" -m "${PROJECT}" --hunk-agent >/dev/null 2>"${SUMMARY}"
 
 hunk_runtime_line="$(grep -nFx "${TEST_DIR}/home/.hunk/hunk-mcp:/home/copilot/.hunk/hunk-mcp:ro" "${CAPTURE}" | cut -d: -f1)"
 
@@ -152,6 +193,9 @@ grep -Fq "127.0.0.1:56789:127.0.0.1:56789" "${SSH_CAPTURE}" ||
     fail "--hunk-agent did not tunnel the Hunk broker over SSH"
 grep -Fq "ExitOnForwardFailure=yes" "${SSH_CAPTURE}" ||
     fail "--hunk-agent did not require the Hunk tunnel to be established"
+grep -Fq "Hunk enabled" "${SUMMARY}" || fail "startup summary did not show enabled Hunk integration"
+grep -Fq "${TEST_DIR}/home/.hunk/hunk-mcp:/home/copilot/.hunk/hunk-mcp:ro" "${SUMMARY}" ||
+    fail "startup summary did not show the Hunk mount"
 pass "--hunk-agent mounts Hunk runtime state and exports broker settings"
 
 rm -f "${SSH_CAPTURE}" "${CAPTURE}"
