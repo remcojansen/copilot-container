@@ -37,10 +37,9 @@
 #                            public-key auth and SSH commit signing.
 #   --hunk-agent             Enable agent access to host Hunk live sessions by
 #                            forwarding Hunk's broker host/runtime state.
-#   --auto-install-tools     If the project has a .tool-versions with pinned
-#                            plugins/versions not yet installed, install them
-#                            via asdf without prompting first. Useful for
-#                            non-interactive/automated runs. Without this
+#   --auto-install-tools     Install missing pinned tools from mounted projects'
+#                            .tool-versions files via asdf without prompting.
+#                            Useful for non-interactive/automated runs. Without this
 #                            flag, you're prompted interactively instead.
 #   --debug                  Stream container logs and keep the container for
 #                            inspection after exit or startup failure.
@@ -593,28 +592,35 @@ wait_for_ssh_ready "${ssh_common_opts[@]}"
 STARTUP_COMPLETE=1
 
 # --- Offer to provision pinned tool versions from .tool-versions --------
-# Only probed/prompted when the primary project actually has one; asdf
-# itself is always present in the image regardless.
-if [ -f "${PRIMARY_HOST_PATH}/.tool-versions" ]; then
-    pending_tools="$(ssh "${ssh_common_opts[@]}" copilot@127.0.0.1 -- \
-        "copilot-container-asdf-provision check $(printf '%q' "${PRIMARY_CONTAINER_PATH}")" \
-        2>/dev/null || true)"
+pending_projects=()
+for container_path in "${CONTAINER_PATHS[@]}"; do
+    if ! pending_tools="$(ssh -n "${ssh_common_opts[@]}" copilot@127.0.0.1 -- \
+        "copilot-container-asdf-provision check $(printf '%q' "${container_path}")")"; then
+        printf 'error: copilot-container: could not check tool versions in %q\n' "${container_path}" >&2
+        exit 1
+    fi
     if [ -n "${pending_tools}" ]; then
-        echo "copilot-container: pinned tool versions in .tool-versions aren't installed yet:" >&2
+        pending_projects+=("${container_path}")
+        printf 'copilot-container: missing tools in %q:\n' "${container_path}" >&2
         printf '%s\n' "${pending_tools}" | sed 's/^/  /' >&2
-        install_tools=0
-        if [ "${AUTO_INSTALL_TOOLS}" -eq 1 ]; then
-            echo "copilot-container: --auto-install-tools set, installing without prompting" >&2
-            install_tools=1
-        else
-            reply=""
-            read -r -p "Install/update them now via asdf? [y/N] " reply || true
-            [[ "${reply}" =~ ^[Yy] ]] && install_tools=1
-        fi
-        if [ "${install_tools}" -eq 1 ]; then
+    fi
+done
+
+if [ "${#pending_projects[@]}" -gt 0 ]; then
+    install_tools=0
+    if [ "${AUTO_INSTALL_TOOLS}" -eq 1 ]; then
+        echo "copilot-container: --auto-install-tools set, installing without prompting" >&2
+        install_tools=1
+    else
+        reply=""
+        read -r -p "Install/update them now via asdf? [y/N] " reply || true
+        [[ "${reply}" =~ ^[Yy] ]] && install_tools=1
+    fi
+    if [ "${install_tools}" -eq 1 ]; then
+        for container_path in "${pending_projects[@]}"; do
             ssh -t "${ssh_common_opts[@]}" copilot@127.0.0.1 -- \
-                "copilot-container-asdf-provision install $(printf '%q' "${PRIMARY_CONTAINER_PATH}")"
-        fi
+                "copilot-container-asdf-provision install $(printf '%q' "${container_path}")"
+        done
     fi
 fi
 

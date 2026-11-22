@@ -115,6 +115,7 @@ printf '%s\n' \
     'for a in "$@"; do' \
     '  if [ "${a}" = "BatchMode=yes" ]; then exit 0; fi' \
     'done' \
+    'case "$*" in *"asdf-provision check"*) exit 0 ;; esac' \
     'printf "%s\n" "$@" > "${SSH_CAPTURE}"' \
     'if [ -n "${SSH_HOLD:-}" ]; then' \
     '  : > "${SSH_READY}"' \
@@ -501,7 +502,18 @@ printf '%s\n' \
     'done' \
     'printf "%s\n" "$*" >> "${SSH_CALLS}"' \
     'case "$*" in' \
-    '  *"asdf-provision check"*) echo "nodejs 20.11.0" ;;' \
+    '  *"asdf-provision check"*)' \
+    '    if [ "${FAKE_ASDF_EMPTY:-0}" = 1 ]; then exit 0; fi' \
+    '    if [ "${FAKE_ASDF_MULTI:-0}" = 1 ]; then' \
+    '      case "$*" in' \
+    '        *"/workspace/api"*) echo "nodejs 20.11.0" ;;' \
+    '        *"/workspace/web"*) echo "nodejs 22.0.0" ;;' \
+    '        *"/workspace/reference"*)' \
+    '          [ "${FAKE_CHECK_FAIL:-0}" = 0 ] || { echo "check failed" >&2; exit 42; }' \
+    '          echo "golang 1.22.1" ;;' \
+    '      esac' \
+    '    else echo "nodejs 20.11.0"; fi' \
+    '    ;;' \
     'esac' \
     'exit 0' > "${FAKE_BIN}/ssh"
 chmod 755 "${FAKE_BIN}/ssh"
@@ -565,6 +577,81 @@ printf '%s\n' "${auto_install_output}" | grep -Fq "installing without prompting"
     fail "--auto-install-tools did not report that it is installing automatically"
 pass "--auto-install-tools installs pending tools without prompting"
 
+REFERENCE_PROJECT="${TEST_DIR}/reference project"
+EMPTY_PROJECT="${TEST_DIR}/empty-project"
+mkdir -p "${REFERENCE_PROJECT}" "${EMPTY_PROJECT}"
+multi_mounts=(
+    -m "${PROJECT}:/workspace/api"
+    -m "${SECOND_PROJECT}:/workspace/web"
+    --mount-ro "${REFERENCE_PROJECT}:/workspace/reference docs"
+    -m "${EMPTY_PROJECT}:/workspace/empty"
+)
+: > "${SSH_CALLS}"
+multi_output="$(printf 'y\n' | env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CALLS="${SSH_CALLS}" \
+    FAKE_ASDF_MULTI=1 PATH="${FAKE_BIN}:${PATH}" "${LAUNCHER}" "${multi_mounts[@]}" 2>&1)"
+for project_path in /workspace/api /workspace/web '/workspace/reference\ docs' /workspace/empty; do
+    grep -Fq "asdf-provision check ${project_path}" "${SSH_CALLS}" ||
+        fail "multi-project check skipped ${project_path}"
+done
+grep -Fq -- "-n -p " "${SSH_CALLS}" || fail "tool checks did not preserve launcher input"
+for project_path in /workspace/api /workspace/web '/workspace/reference\ docs'; do
+    printf '%s\n' "${multi_output}" | grep -Fq "missing tools in ${project_path}:" ||
+        fail "missing tools were not grouped under ${project_path}"
+    grep -Fq "asdf-provision install ${project_path}" "${SSH_CALLS}" ||
+        fail "multi-project install skipped ${project_path}"
+done
+! grep -Fq "asdf-provision install /workspace/empty" "${SSH_CALLS}" ||
+    fail "multi-project install included a project with no missing tools"
+for version in "nodejs 20.11.0" "nodejs 22.0.0" "golang 1.22.1"; do
+    printf '%s\n' "${multi_output}" | grep -Fq "${version}" ||
+        fail "multi-project summary omitted ${version}"
+done
+pass "one confirmation installs missing tools across writable and read-only mounts"
+
+: > "${SSH_CALLS}"
+printf 'n\n' | env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CALLS="${SSH_CALLS}" \
+    FAKE_ASDF_MULTI=1 PATH="${FAKE_BIN}:${PATH}" "${LAUNCHER}" "${multi_mounts[@]}" >/dev/null 2>&1
+! grep -Fq "asdf-provision install" "${SSH_CALLS}" ||
+    fail "declining multi-project provisioning installed tools"
+pass "declining multi-project provisioning skips all installs"
+
+: > "${SSH_CALLS}"
+env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CALLS="${SSH_CALLS}" \
+    FAKE_ASDF_MULTI=1 PATH="${FAKE_BIN}:${PATH}" \
+    "${LAUNCHER}" "${multi_mounts[@]}" </dev/null >/dev/null 2>&1
+! grep -Fq "asdf-provision install" "${SSH_CALLS}" ||
+    fail "non-interactive provisioning installed tools without opt-in"
+pass "non-interactive multi-project provisioning requires opt-in"
+
+: > "${SSH_CALLS}"
+env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CALLS="${SSH_CALLS}" \
+    FAKE_ASDF_MULTI=1 PATH="${FAKE_BIN}:${PATH}" \
+    "${LAUNCHER}" "${multi_mounts[@]}" --auto-install-tools </dev/null >/dev/null 2>&1
+for project_path in /workspace/api /workspace/web '/workspace/reference\ docs'; do
+    grep -Fq "asdf-provision install ${project_path}" "${SSH_CALLS}" ||
+        fail "automatic provisioning skipped ${project_path}"
+done
+pass "--auto-install-tools covers every mounted project"
+
+: > "${SSH_CALLS}"
+empty_output="$(env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CALLS="${SSH_CALLS}" \
+    FAKE_ASDF_EMPTY=1 PATH="${FAKE_BIN}:${PATH}" \
+    "${LAUNCHER}" "${multi_mounts[@]}" </dev/null 2>&1)"
+! printf '%s\n' "${empty_output}" | grep -Fq "missing tools in" ||
+    fail "empty tool checks reported missing tools"
+! grep -Fq "asdf-provision install" "${SSH_CALLS}" ||
+    fail "empty tool checks triggered an install"
+pass "projects without missing tools do not trigger provisioning"
+
+: > "${SSH_CALLS}"
+assert_output_contains 'could not check tool versions in /workspace/reference\ docs' \
+    env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CALLS="${SSH_CALLS}" \
+    FAKE_ASDF_MULTI=1 FAKE_CHECK_FAIL=1 PATH="${FAKE_BIN}:${PATH}" \
+    "${LAUNCHER}" "${multi_mounts[@]}" --auto-install-tools
+! grep -Fq "asdf-provision install" "${SSH_CALLS}" ||
+    fail "failed tool check triggered partial installation"
+pass "tool check failures stop before installing anything"
+
 rm -f "${SSH_CALLS}" "${PROJECT}/.tool-versions"
 
 # Unit-test the in-container helper script directly against a fake asdf
@@ -605,6 +692,32 @@ printf '%s\n' "${check_output}" | grep -Fxq "golang 1.22.1" ||
 ! printf '%s\n' "${check_output}" | grep -Fxq "nodejs 20.11.0" ||
     fail "check reported an already-installed tool as pending"
 pass "asdf-provision check reports only missing plugins/versions"
+
+printf '%s\n' 'nodejs system 20.11.0 22.0.0 path:/opt/node # fallback' > "${ASDF_PROJECT}/.tool-versions"
+fallback_check_output="$(env PATH="${FAKE_BIN}:${PATH}" PLUGINS_FILE="${PLUGINS_FILE}" \
+    INSTALLED_FILE="${INSTALLED_FILE}" ASDF_CALLS="${ASDF_CALLS}" \
+    bash "${ASDF_SCRIPT}" check "${ASDF_PROJECT}")"
+[ "${fallback_check_output}" = "nodejs 22.0.0" ] ||
+    fail "check did not report only the missing fallback version"
+printf 'nodejs 20.11.0 22.0.0# fallback\n#golang 100\ngolang 1.22.1# comment' \
+    > "${ASDF_PROJECT}/.tool-versions"
+comment_check_output="$(env PATH="${FAKE_BIN}:${PATH}" PLUGINS_FILE="${PLUGINS_FILE}" \
+    INSTALLED_FILE="${INSTALLED_FILE}" ASDF_CALLS="${ASDF_CALLS}" \
+    bash "${ASDF_SCRIPT}" check "${ASDF_PROJECT}")"
+[ "${comment_check_output}" = $'nodejs 22.0.0\ngolang 1.22.1' ] ||
+    fail "check did not strip inline comments before parsing versions"
+pass "asdf-provision strips inline comments before parsing versions"
+
+printf 'nodejs 20.11.0 \r\ngolang 1.22.1 \t \r\n' > "${ASDF_PROJECT}/.tool-versions"
+crlf_check_output="$(env PATH="${FAKE_BIN}:${PATH}" PLUGINS_FILE="${PLUGINS_FILE}" \
+    INSTALLED_FILE="${INSTALLED_FILE}" ASDF_CALLS="${ASDF_CALLS}" \
+    bash "${ASDF_SCRIPT}" check "${ASDF_PROJECT}")"
+[ "${crlf_check_output}" = "golang 1.22.1" ] ||
+    fail "check reported an empty version after trailing whitespace and CRLF"
+pass "asdf-provision ignores trailing whitespace before CRLF"
+
+printf '%s\n' 'nodejs 20.11.0' 'golang 1.22.1' > "${ASDF_PROJECT}/.tool-versions"
+pass "asdf-provision checks every installable version on each line"
 
 env PATH="${FAKE_BIN}:${PATH}" PLUGINS_FILE="${PLUGINS_FILE}" \
     INSTALLED_FILE="${INSTALLED_FILE}" ASDF_CALLS="${ASDF_CALLS}" \
