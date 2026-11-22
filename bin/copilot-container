@@ -432,9 +432,11 @@ if [ -f "${HOME}/.copilot/copilot-instructions.md" ]; then
 fi
 
 # --- Assemble run flags ------------------------------------------------
-CONTAINER_NAME="copilot-container-$$-${RANDOM}"
+volume_hash="$(printf '%s' "${VOLUME_NAME}" | shasum -a 256 2>/dev/null | cut -d' ' -f1 || \
+               printf '%s' "${VOLUME_NAME}" | sha256sum | cut -d' ' -f1)"
+CONTAINER_NAME="copilot-container-${volume_hash}"
 BRIDGE_TMP="$(mktemp -d)"
-CONTAINER_STARTED=0
+CONTAINER_ID=""
 STARTUP_COMPLETE=0
 LOGS_PID=""
 
@@ -446,19 +448,21 @@ cleanup() {
         wait "${LOGS_PID}" 2>/dev/null || true
     fi
     rm -rf "${BRIDGE_TMP}"
-    if [ "${DEBUG}" -eq 1 ] && [ "${CONTAINER_STARTED}" -eq 1 ]; then
+    if [ "${DEBUG}" -eq 1 ] && [ -n "${CONTAINER_ID}" ]; then
         echo "copilot-container: debug container retained: ${CONTAINER_NAME}" >&2
         printf '  Logs:    %q logs %q\n' "${ENGINE}" "${CONTAINER_NAME}" >&2
         printf '  Shell:   %q exec -it %q /bin/bash\n' "${ENGINE}" "${CONTAINER_NAME}" >&2
         printf '  Cleanup: %q rm -f %q\n' "${ENGINE}" "${CONTAINER_NAME}" >&2
     else
-        if [ "${CONTAINER_STARTED}" -eq 1 ] && [ "${STARTUP_COMPLETE}" -eq 0 ] && [ "${status}" -ne 0 ]; then
+        if [ -n "${CONTAINER_ID}" ] && [ "${STARTUP_COMPLETE}" -eq 0 ] && [ "${status}" -ne 0 ]; then
             echo "copilot-container: container startup logs:" >&2
-            if ! "${ENGINE}" logs "${CONTAINER_NAME}" >&2; then
+            if ! "${ENGINE}" logs "${CONTAINER_ID}" >&2; then
                 echo "error: copilot-container: could not retrieve container logs" >&2
             fi
         fi
-        "${ENGINE}" rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+        if [ -n "${CONTAINER_ID}" ]; then
+            "${ENGINE}" rm -f "${CONTAINER_ID}" >/dev/null 2>&1 || true
+        fi
     fi
     exit "${status}"
 }
@@ -466,8 +470,7 @@ trap cleanup EXIT
 
 generate_bridge_credentials
 
-RUN_FLAGS=(
-    -d
+CREATE_FLAGS=(
     --name "${CONTAINER_NAME}"
     -p "127.0.0.1::2222"
     "${BIND_FLAGS[@]}"
@@ -482,13 +485,13 @@ RUN_FLAGS=(
     -e "AUTHORIZED_KEYS_B64=${AUTHORIZED_KEYS_B64}"
 )
 if [ "${DEBUG}" -eq 1 ]; then
-    RUN_FLAGS+=(-e "COPILOT_CONTAINER_DEBUG=1")
+    CREATE_FLAGS+=(-e "COPILOT_CONTAINER_DEBUG=1")
 fi
 
 # Ensure current user's UID and GID are preserved in the container when
 # running rootless Podman (default on most Linux distributions).
 if [ "${ENGINE}" = "podman" ]; then
-    RUN_FLAGS+=(--userns=keep-id --user root)
+    CREATE_FLAGS+=(--userns=keep-id --user root)
 fi
 
 # GH token passthrough (never persisted, only forwarded if present on host).
@@ -556,16 +559,24 @@ if [ -t 0 ] && [ -t 2 ]; then
     IFS= read -r || exit 1
 fi
 
-# --- Start the container detached, then connect in over SSH -------------
-"${ENGINE}" run "${RUN_FLAGS[@]}" "${IMAGE}" >/dev/null
-CONTAINER_STARTED=1
+# --- Create and start the container, then connect in over SSH -----------
+if ! CONTAINER_ID="$("${ENGINE}" create "${CREATE_FLAGS[@]}" "${IMAGE}")"; then
+    CONTAINER_ID=""
+    if "${ENGINE}" container inspect "${CONTAINER_NAME}" >/dev/null 2>&1; then
+        printf 'error: a container for state volume %q already exists: %s\n' "${VOLUME_NAME}" "${CONTAINER_NAME}" >&2
+        printf '  Inspect: %q inspect %q\n' "${ENGINE}" "${CONTAINER_NAME}" >&2
+        printf '  If no longer needed, remove it: %q rm -f %q\n' "${ENGINE}" "${CONTAINER_NAME}" >&2
+    fi
+    exit 1
+fi
+"${ENGINE}" start "${CONTAINER_ID}" >/dev/null
 if [ "${DEBUG}" -eq 1 ]; then
     echo "copilot-container: debugging ${CONTAINER_NAME}" >&2
-    "${ENGINE}" logs -f "${CONTAINER_NAME}" >&2 &
+    "${ENGINE}" logs -f "${CONTAINER_ID}" >&2 &
     LOGS_PID=$!
 fi
 
-bridge_port="$(wait_for_published_port "${ENGINE}" "${CONTAINER_NAME}")"
+bridge_port="$(wait_for_published_port "${ENGINE}" "${CONTAINER_ID}")"
 
 ssh_common_opts=(
     -p "${bridge_port}"

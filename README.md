@@ -167,8 +167,11 @@ copilot-container --state-volume my-workspace -m /path/to/second-project
 
 Volume names must start with a letter or digit and contain only letters,
 digits, underscores, periods, and hyphens. The volume is created if needed
-and is not removed when the container exits. Avoid simultaneous launches
-using the same volume: their SSH bridge state can conflict.
+and is not removed when the container exits. Only one container launched by
+this version of the launcher can use a given state volume at a time, per
+container engine. A retained or stopped container also reserves the volume;
+inspect it and remove it when no longer needed. Containers started by older
+launchers or outside the launcher are not covered by this protection.
 
 Use `--mount-ro` for projects that should not be modified:
 

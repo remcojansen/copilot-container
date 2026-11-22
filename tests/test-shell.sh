@@ -58,7 +58,7 @@ assert_output_contains "SSH_AUTH_SOCK is not set to a valid socket" \
     env -u SSH_AUTH_SOCK HOME="${TEST_DIR}/home" "${LAUNCHER}" -m "${TEST_DIR}" --ssh-agent
 pass "--ssh-agent fails when SSH_AUTH_SOCK is missing"
 
-# --- Fake podman: always starts detached, always publishes port 65000 ----
+# --- Fake podman: starts containers and publishes port 65000 -------------
 FAKE_BIN="${TEST_DIR}/bin"
 CAPTURE="${TEST_DIR}/run-args"
 mkdir -p "${FAKE_BIN}"
@@ -74,13 +74,28 @@ printf '%s\n' \
     '    echo "127.0.0.1:65000"' \
     '    exit 0' \
     '    ;;' \
-    '  run)' \
+    '  create)' \
     '    shift' \
     '    printf "%s\n" "$@" > "${CAPTURE}"' \
-    '    echo fake-container-id' \
+    '    [ "${1:-}" = "--name" ] || exit 1' \
+    '    name="$2"' \
+    '    if [ "${FAKE_CREATE_FAIL:-0}" != 0 ]; then echo unexpected-output; exit 1; fi' \
+    '    if [ -n "${FAKE_ENGINE_STATE:-}" ]; then' \
+    '      mkdir "${FAKE_ENGINE_STATE}/${name}" 2>/dev/null || { echo "name already in use" >&2; exit 1; }' \
+    '    fi' \
+    '    echo "id-${name}"' \
+    '    exit 0' \
+    '    ;;' \
+    '  container)' \
+    '    [ "${2:-}" = inspect ] && [ -n "${FAKE_ENGINE_STATE:-}" ] && [ -d "${FAKE_ENGINE_STATE}/${3:-}" ]' \
+    '    exit $?' \
+    '    ;;' \
+    '  start)' \
+    '    [ "${FAKE_START_FAIL:-0}" = 0 ] || exit 1' \
     '    exit 0' \
     '    ;;' \
     '  rm)' \
+    '    if [ -n "${FAKE_ENGINE_STATE:-}" ]; then rmdir "${FAKE_ENGINE_STATE}/${3#id-}"; fi' \
     '    exit 0' \
     '    ;;' \
     '  logs)' \
@@ -101,6 +116,10 @@ printf '%s\n' \
     '  if [ "${a}" = "BatchMode=yes" ]; then exit 0; fi' \
     'done' \
     'printf "%s\n" "$@" > "${SSH_CAPTURE}"' \
+    'if [ -n "${SSH_HOLD:-}" ]; then' \
+    '  : > "${SSH_READY}"' \
+    '  read -r _ < "${SSH_HOLD}"' \
+    'fi' \
     'exit 0' > "${FAKE_BIN}/ssh"
 chmod 755 "${FAKE_BIN}/ssh"
 
@@ -109,7 +128,9 @@ assert_output_contains "no host Hunk runtime state was found" \
     "${LAUNCHER}" -m "${PROJECT}" --hunk-agent
 pass "--hunk-agent fails when host Hunk runtime state is missing"
 
-HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CAPTURE="${SSH_CAPTURE}" PATH="${FAKE_BIN}:${PATH}" \
+INITIAL_ENGINE_CALLS="${TEST_DIR}/initial-engine-calls"
+HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CAPTURE="${SSH_CAPTURE}" \
+    ENGINE_CALLS="${INITIAL_ENGINE_CALLS}" PATH="${FAKE_BIN}:${PATH}" \
     "${LAUNCHER}" -m "${PROJECT}" >/dev/null
 
 home_volume_line="$(grep -nE ':/home/copilot:z$' "${CAPTURE}" | head -n1 | cut -d: -f1)"
@@ -125,8 +146,9 @@ instructions_line="$(grep -nFx "${TEST_DIR}/home/.copilot/copilot-instructions.m
     fail "state volume must precede the instructions mount"
 pass "state volume precedes nested read-only mounts"
 
-grep -Fxq -- "-d" "${CAPTURE}" || fail "container is not started detached (-d)"
-pass "container is always started detached"
+grep -q '^start id-copilot-container-' "${INITIAL_ENGINE_CALLS}" ||
+    fail "created container was not started"
+pass "container is started after creation"
 
 [ -f "${SSH_CAPTURE}" ] || fail "launcher did not connect in over ssh"
 grep -Fq "copilot@127.0.0.1" "${SSH_CAPTURE}" || fail "ssh session did not target copilot@127.0.0.1"
@@ -238,7 +260,7 @@ if command -v script >/dev/null 2>&1 && script --version 2>/dev/null | grep -q '
         sleep 0.05
     done
     if ! grep -Fq "Press Enter to start Copilot" "${tty_log}" ||
-        grep -q '^run ' "${tty_engine_calls}"; then
+        grep -q '^create ' "${tty_engine_calls}"; then
         kill "${tty_pid}" 2>/dev/null || true
         wait "${tty_pid}" 2>/dev/null || true
         fail "interactive launcher did not wait before starting the container"
@@ -246,7 +268,7 @@ if command -v script >/dev/null 2>&1 && script --version 2>/dev/null | grep -q '
     printf '\n' >&9
     wait "${tty_pid}" || fail "interactive launcher did not continue after Enter"
     exec 9>&-
-    grep -q '^run ' "${tty_engine_calls}" || fail "Enter did not start the container"
+    grep -q '^create ' "${tty_engine_calls}" || fail "Enter did not start the container"
     pass "interactive startup waits for Enter before starting the container"
 fi
 
@@ -304,6 +326,105 @@ grep -Fxq "volume inspect my-workspace" "${VOLUME_CALLS}" ||
 grep -Fxq "volume create my-workspace" "${VOLUME_CALLS}" ||
     fail "missing explicit state volume was not created"
 pass "explicit state volume is independent of the primary project"
+
+ENGINE_STATE="${TEST_DIR}/engine-state"
+ENGINE_CALLS="${TEST_DIR}/concurrent-engine-calls"
+SSH_HOLD="${TEST_DIR}/ssh-hold"
+SSH_READY="${TEST_DIR}/ssh-ready"
+mkdir -p "${ENGINE_STATE}"
+mkfifo "${SSH_HOLD}"
+env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CAPTURE="${SSH_CAPTURE}" \
+    FAKE_ENGINE_STATE="${ENGINE_STATE}" ENGINE_CALLS="${ENGINE_CALLS}" \
+    SSH_HOLD="${SSH_HOLD}" SSH_READY="${SSH_READY}" PATH="${FAKE_BIN}:${PATH}" \
+    "${LAUNCHER}" --state-volume shared -m "${PROJECT}" >"${TEST_DIR}/first-launch" 2>&1 &
+first_pid=$!
+for _ in $(seq 1 200); do
+    [ -f "${SSH_READY}" ] && break
+    kill -0 "${first_pid}" 2>/dev/null || break
+    sleep 0.05
+done
+if [ ! -f "${SSH_READY}" ]; then
+    kill "${first_pid}" 2>/dev/null || true
+    wait "${first_pid}" 2>/dev/null || true
+    fail "first concurrent session did not start"
+fi
+first_name="$(sed -n '2p' "${CAPTURE}")"
+: > "${ENGINE_CALLS}"
+conflict_status=0
+conflict_output="$(env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CAPTURE="${SSH_CAPTURE}" \
+    FAKE_ENGINE_STATE="${ENGINE_STATE}" ENGINE_CALLS="${ENGINE_CALLS}" PATH="${FAKE_BIN}:${PATH}" \
+    "${LAUNCHER}" --state-volume shared -m "${SECOND_PROJECT}" 2>&1)" || conflict_status=$?
+other_status=0
+env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CAPTURE="${SSH_CAPTURE}" \
+    FAKE_ENGINE_STATE="${ENGINE_STATE}" ENGINE_CALLS="${ENGINE_CALLS}" PATH="${FAKE_BIN}:${PATH}" \
+    "${LAUNCHER}" --state-volume other -m "${PROJECT}" >/dev/null 2>&1 || other_status=$?
+first_still_exists=0
+[ -d "${ENGINE_STATE}/${first_name}" ] && first_still_exists=1
+removed_by_competitor=0
+grep -Fxq "rm -f id-${first_name}" "${ENGINE_CALLS}" && removed_by_competitor=1
+printf 'continue\n' > "${SSH_HOLD}"
+wait "${first_pid}" || fail "first concurrent session failed"
+[ "${conflict_status}" -ne 0 ] || fail "same-volume concurrent launch succeeded"
+printf '%s\n' "${conflict_output}" | grep -Fq "container for state volume shared already exists" ||
+    fail "same-volume conflict did not explain the existing container"
+printf '%s\n' "${conflict_output}" | grep -Fq "Inspect:" ||
+    fail "same-volume conflict did not provide inspection instructions"
+[ "${other_status}" -eq 0 ] || fail "different volume could not start concurrently"
+[ "${first_still_exists}" -eq 1 ] || fail "competing launch removed the first container"
+[ "${removed_by_competitor}" -eq 0 ] || fail "competing launch attempted to remove the first container"
+[ ! -d "${ENGINE_STATE}/${first_name}" ] || fail "first session did not clean up its container"
+pass "same-volume launches conflict without affecting other containers"
+
+env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CAPTURE="${SSH_CAPTURE}" \
+    FAKE_ENGINE_STATE="${ENGINE_STATE}" ENGINE_CALLS="${ENGINE_CALLS}" PATH="${FAKE_BIN}:${PATH}" \
+    "${LAUNCHER}" --debug --state-volume retained -m "${PROJECT}" >/dev/null 2>&1
+retained_name="$(sed -n '2p' "${CAPTURE}")"
+[ -d "${ENGINE_STATE}/${retained_name}" ] || fail "debug container was not retained"
+: > "${ENGINE_CALLS}"
+assert_output_contains "container for state volume retained already exists" \
+    env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CAPTURE="${SSH_CAPTURE}" \
+    FAKE_ENGINE_STATE="${ENGINE_STATE}" ENGINE_CALLS="${ENGINE_CALLS}" PATH="${FAKE_BIN}:${PATH}" \
+    "${LAUNCHER}" --state-volume retained -m "${PROJECT}"
+[ -d "${ENGINE_STATE}/${retained_name}" ] || fail "conflict removed retained debug container"
+! grep -q '^rm ' "${ENGINE_CALLS}" || fail "conflict attempted to remove retained debug container"
+rmdir "${ENGINE_STATE}/${retained_name}"
+pass "retained debug containers reserve their state volume"
+
+: > "${ENGINE_CALLS}"
+start_status=0
+env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CAPTURE="${SSH_CAPTURE}" \
+    FAKE_ENGINE_STATE="${ENGINE_STATE}" FAKE_START_FAIL=1 ENGINE_CALLS="${ENGINE_CALLS}" \
+    PATH="${FAKE_BIN}:${PATH}" "${LAUNCHER}" --state-volume broken -m "${PROJECT}" \
+    >/dev/null 2>&1 || start_status=$?
+[ "${start_status}" -ne 0 ] || fail "engine start failure was ignored"
+failed_name="$(sed -n '2p' "${CAPTURE}")"
+grep -Fxq "rm -f id-${failed_name}" "${ENGINE_CALLS}" ||
+    fail "start failure did not remove the newly created container by ID"
+[ ! -d "${ENGINE_STATE}/${failed_name}" ] || fail "start failure left the container behind"
+pass "start failures clean up only the created container"
+
+: > "${ENGINE_CALLS}"
+debug_start_status=0
+env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CAPTURE="${SSH_CAPTURE}" \
+    FAKE_ENGINE_STATE="${ENGINE_STATE}" FAKE_START_FAIL=1 ENGINE_CALLS="${ENGINE_CALLS}" \
+    PATH="${FAKE_BIN}:${PATH}" "${LAUNCHER}" --debug --state-volume broken -m "${PROJECT}" \
+    >/dev/null 2>&1 || debug_start_status=$?
+failed_name="$(sed -n '2p' "${CAPTURE}")"
+[ "${debug_start_status}" -ne 0 ] || fail "debug mode hid the engine start failure"
+[ -d "${ENGINE_STATE}/${failed_name}" ] || fail "debug mode did not retain the failed container"
+! grep -q '^rm ' "${ENGINE_CALLS}" || fail "debug mode removed the failed container"
+rmdir "${ENGINE_STATE}/${failed_name}"
+pass "debug mode retains a container that fails to start"
+
+: > "${ENGINE_CALLS}"
+create_status=0
+env HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" SSH_CAPTURE="${SSH_CAPTURE}" \
+    FAKE_ENGINE_STATE="${ENGINE_STATE}" FAKE_CREATE_FAIL=1 ENGINE_CALLS="${ENGINE_CALLS}" \
+    PATH="${FAKE_BIN}:${PATH}" "${LAUNCHER}" --state-volume broken -m "${PROJECT}" \
+    >/dev/null 2>&1 || create_status=$?
+[ "${create_status}" -ne 0 ] || fail "engine create failure was ignored"
+! grep -q '^rm ' "${ENGINE_CALLS}" || fail "create failure attempted to remove a container"
+pass "create failures never remove a container"
 
 rm -f "${SSH_CAPTURE}" "${CAPTURE}"
 
@@ -621,7 +742,7 @@ printf '%s\n' "${readiness_output}" | grep -Fq "Permission denied (publickey)." 
 pass "readiness timeout surfaces the last ssh error instead of a bare timeout"
 printf '%s\n' "${readiness_output}" | grep -Fq "test container startup log" ||
     fail "startup failure did not print container logs"
-grep -q '^rm -f copilot-container-' "${ENGINE_CALLS}" ||
+grep -q '^rm -f id-copilot-container-' "${ENGINE_CALLS}" ||
     fail "normal startup failure did not remove the container"
 ! grep -Fxq -- "--rm" "${CAPTURE}" ||
     fail "engine auto-removal would discard logs before diagnostics"
@@ -636,7 +757,7 @@ debug_output="$(HOME="${TEST_DIR}/home" CAPTURE="${CAPTURE}" ENGINE_CALLS="${ENG
 grep -Fxq "COPILOT_CONTAINER_DEBUG=1" "${CAPTURE}" ||
     fail "debug mode did not enable entrypoint diagnostics"
 ! grep -q '^rm ' "${ENGINE_CALLS}" || fail "debug mode removed the container"
-grep -q '^logs -f copilot-container-' "${ENGINE_CALLS}" ||
+grep -q '^logs -f id-copilot-container-' "${ENGINE_CALLS}" ||
     fail "debug mode did not follow container logs"
 printf '%s\n' "${debug_output}" | grep -Fq "test container startup log" ||
     fail "debug mode did not stream container logs"
